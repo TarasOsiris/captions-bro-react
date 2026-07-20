@@ -218,12 +218,19 @@ export function Timeline({
                   className={`absolute inset-0 overflow-hidden bg-black ${selected ? 'rounded-none' : 'rounded-[11px]'}`}
                 >
                   {clip.thumbs.length > 0 ? (
-                    <div className="flex h-full w-full">
+                    <div className="absolute inset-0">
                       {clip.thumbs.map((src, i) => (
+                        // Tiles are absolutely placed and 1px wider than their
+                        // slot so neighbours overlap — fractional pixel widths
+                        // (any DPR) can never open a seam showing the black base.
                         <div
                           key={i}
-                          style={{ backgroundImage: `url(${src})` }}
-                          className="h-full min-w-0 flex-1 bg-cover bg-center"
+                          style={{
+                            backgroundImage: `url("${src}")`,
+                            left: `${((i / clip.thumbs.length) * 100).toFixed(4)}%`,
+                            width: `calc(${(100 / clip.thumbs.length).toFixed(4)}% + 1px)`,
+                          }}
+                          className="absolute inset-y-0 bg-cover bg-center"
                         />
                       ))}
                     </div>

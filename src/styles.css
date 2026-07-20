@@ -10,8 +10,8 @@
   /* iOS app accent (AccentColor asset, dark mode #A889FF). */
   --color-accent: #a889ff;
   --color-accent-deep: #7c3aed;
-  /* iOS timeline selection chrome (white in dark mode). */
-  --color-select: #ffffff;
+  /* iOS timeline selection chrome (light-mode amber #FFD203). */
+  --color-select: #ffd203;
   --color-stage: #060709;
   --font-sans:
     'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
