@@ -118,7 +118,7 @@ export function Timeline({
   }
 
   return (
-    <footer className="flex h-56 shrink-0 flex-col border-t border-edge bg-surface/70">
+    <footer className="flex h-72 shrink-0 flex-col border-t border-edge bg-surface/70">
       <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-edge/70 px-3">
         <div className="flex items-center gap-1">
           {TOOLBAR_TOOLS.map(({ Icon, label }) => (
