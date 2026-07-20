@@ -214,16 +214,16 @@ export function Timeline({
                 }}
                 className="relative h-14 cursor-pointer"
               >
-                <div className="absolute inset-0 overflow-hidden rounded-[11px] bg-black">
+                <div
+                  className={`absolute inset-0 overflow-hidden bg-black ${selected ? 'rounded-none' : 'rounded-[11px]'}`}
+                >
                   {clip.thumbs.length > 0 ? (
                     <div className="flex h-full w-full">
                       {clip.thumbs.map((src, i) => (
-                        <img
+                        <div
                           key={i}
-                          src={src}
-                          alt=""
-                          draggable={false}
-                          className="h-full min-w-0 flex-1 object-cover"
+                          style={{ backgroundImage: `url(${src})` }}
+                          className="h-full min-w-0 flex-1 bg-cover bg-center"
                         />
                       ))}
                     </div>
