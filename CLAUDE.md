@@ -4,10 +4,15 @@ Web version of the **captions-bro** iOS app. The iOS app burns karaoke-style
 captions into videos on-device (Apple Speech transcription → styled overlay →
 AVFoundation H.264 export). This is the browser port.
 
-**Current scope (MVP):** import a video → preview it → export a re-encoded
-**H.264 + AAC MP4**, entirely client-side via WebCodecs. No transcription or
-caption rendering yet — the export pipeline is built first because caption
-burn-in plugs directly into it.
+**Current scope (MVP):** import a video **or image** → preview it on a 16:9
+canvas → export a re-encoded **H.264 + AAC MP4**, entirely client-side via
+WebCodecs. Images become fixed-length still-frame clips (like the iOS app's
+still→video). No transcription or caption rendering yet — the export pipeline is
+built first because caption burn-in plugs directly into it.
+
+`export.ts` has two entry points: `exportVideo` (decode→encode a video via
+`Conversion`) and `exportImage` (encode a still onto a `CanvasSource` for a fixed
+duration). Both return the same `ExportHandle`.
 
 ## Stack
 

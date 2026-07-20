@@ -57,7 +57,7 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
         />
       </nav>
 
-      <div className="flex w-60 flex-col">
+      <div className="flex w-72 flex-col">
         <div className="flex h-10 shrink-0 items-center justify-between px-3">
           <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             Media

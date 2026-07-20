@@ -1,22 +1,49 @@
 export const VIDEO_EXTENSIONS = ['.mov', '.mp4', '.m4v', '.webm', '.mkv']
+export const IMAGE_EXTENSIONS = [
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.gif',
+  '.bmp',
+  '.avif',
+]
 
-export interface LoadedVideo {
+/** Fixed clip length given to a still image, matching the iOS app's still→video. */
+export const DEFAULT_IMAGE_DURATION_SEC = 5
+
+export type MediaKind = 'video' | 'image'
+
+export interface LoadedMedia {
   file: File
+  kind: MediaKind
   url: string
   name: string
   sizeBytes: number
+  /** Video: read from metadata (null until known). Image: the default clip length. */
   durationSec: number | null
-  /** Filmstrip frames (data URLs) for the timeline clip; empty while generating. */
+  /** Filmstrip frames (data/object URLs) for the timeline clip; empty while generating. */
   thumbs: string[]
 }
 
-export function isVideoFile(file: File): boolean {
-  if (file.type.startsWith('video/')) return true
+function hasExtension(name: string, extensions: string[]): boolean {
+  const lower = name.toLowerCase()
+  return extensions.some((ext) => lower.endsWith(ext))
+}
+
+/** Classify a picked file, or `null` if it's neither a supported video nor image. */
+export function mediaKind(file: File): MediaKind | null {
+  if (file.type.startsWith('video/')) return 'video'
+  if (file.type.startsWith('image/')) return 'image'
   if (file.type === '') {
-    const lower = file.name.toLowerCase()
-    return VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext))
+    if (hasExtension(file.name, VIDEO_EXTENSIONS)) return 'video'
+    if (hasExtension(file.name, IMAGE_EXTENSIONS)) return 'image'
   }
-  return false
+  return null
+}
+
+export function isMediaFile(file: File): boolean {
+  return mediaKind(file) !== null
 }
 
 export function formatBytes(bytes: number): string {

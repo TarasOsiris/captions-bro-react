@@ -64,6 +64,120 @@ function suggestedName(file: File): string {
   return `${base}-captions-bro.mp4`
 }
 
+// Longest edge for an exported still — keeps encodes within H.264 level limits
+// and roughly matches the iOS app's 1080p default.
+const IMAGE_MAX_EDGE = 1920
+const IMAGE_FPS = 30
+
+/**
+ * Draws `file` (an image) onto a fresh canvas at even, capped dimensions.
+ * Even width/height are required by H.264; EXIF orientation is respected.
+ */
+async function drawImageToCanvas(file: File): Promise<HTMLCanvasElement> {
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+  } catch {
+    try {
+      bitmap = await createImageBitmap(file)
+    } catch {
+      throw new ExportInvalidFileError("This image couldn't be decoded.")
+    }
+  }
+
+  const scale = Math.min(
+    1,
+    IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height),
+  )
+  const w = Math.max(2, Math.floor((bitmap.width * scale) / 2) * 2)
+  const h = Math.max(2, Math.floor((bitmap.height * scale) / 2) * 2)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    bitmap.close()
+    throw new ExportInvalidFileError('Canvas is unavailable in this browser.')
+  }
+  ctx.drawImage(bitmap, 0, 0, w, h)
+  bitmap.close()
+  return canvas
+}
+
+/**
+ * Encodes a still `image` file into a silent H.264 MP4 of `durationSec`, holding
+ * the image on a fixed canvas — the browser equivalent of the iOS app turning a
+ * picked image into a still-frame video. Same handle contract as {@link exportVideo}.
+ */
+export function exportImage(
+  file: File,
+  opts: { durationSec: number; onProgress?: (fraction: number) => void },
+): ExportHandle {
+  const control = { cancelled: false }
+  const isCancelled = () => control.cancelled
+  let cancelOutput: (() => Promise<void>) | null = null
+
+  const done = (async (): Promise<ExportResult> => {
+    const mb = await import('mediabunny')
+    const canvas = await drawImageToCanvas(file)
+
+    const output = new mb.Output({
+      format: new mb.Mp4OutputFormat({ fastStart: 'in-memory' }),
+      target: new mb.BufferTarget(),
+    })
+    cancelOutput = () => output.cancel()
+
+    const source = new mb.CanvasSource(canvas, {
+      codec: 'avc',
+      bitrate: mb.QUALITY_HIGH,
+    })
+    output.addVideoTrack(source, { frameRate: IMAGE_FPS })
+
+    if (isCancelled()) {
+      await output.cancel()
+      throw new ExportCancelledError()
+    }
+    await output.start()
+
+    const totalFrames = Math.max(1, Math.round(opts.durationSec * IMAGE_FPS))
+    const step = 1 / IMAGE_FPS
+    try {
+      for (let i = 0; i < totalFrames; i++) {
+        if (isCancelled()) {
+          await output.cancel()
+          throw new ExportCancelledError()
+        }
+        await source.add(i * step, step)
+        opts.onProgress?.((0.9 * (i + 1)) / totalFrames)
+      }
+      await output.finalize()
+    } catch (err) {
+      if (err instanceof ExportCancelledError) throw err
+      if (isCancelled()) throw new ExportCancelledError()
+      throw new ExportInvalidFileError('The image could not be encoded.')
+    }
+
+    opts.onProgress?.(1)
+    const buffer = output.target.buffer
+    if (!buffer) throw new ExportInvalidFileError()
+
+    return {
+      blob: new Blob([buffer], { type: 'video/mp4' }),
+      suggestedFileName: suggestedName(file),
+      discardedTracks: [],
+    }
+  })()
+
+  return {
+    done,
+    cancel: async () => {
+      control.cancelled = true
+      if (cancelOutput) await cancelOutput()
+    },
+  }
+}
+
 /**
  * Re-encodes `file` to an H.264 + AAC MP4 entirely in the browser (decode →
  * encode via WebCodecs, driven by mediabunny). Returns immediately with a handle;

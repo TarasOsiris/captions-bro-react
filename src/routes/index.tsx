@@ -1,36 +1,44 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ExportCancelledError, canExportH264, exportVideo } from '@/lib/export'
-import { formatBytes, isVideoFile } from '@/lib/media'
+import {
+  ExportCancelledError,
+  canExportH264,
+  exportImage,
+  exportVideo,
+} from '@/lib/export'
+import {
+  DEFAULT_IMAGE_DURATION_SEC,
+  formatBytes,
+  mediaKind,
+} from '@/lib/media'
 import { generateFilmstrip } from '@/lib/thumbs'
 import { MediaPanel } from '@/components/editor/MediaPanel'
 import { PreviewStage } from '@/components/editor/PreviewStage'
 import { Timeline } from '@/components/editor/Timeline'
 import { TopBar } from '@/components/editor/TopBar'
-import {
-  IconCheck,
-  IconDownload,
-  IconX,
-} from '@/components/editor/icons'
+import { IconCheck, IconDownload, IconX } from '@/components/editor/icons'
 import type { ExportHandle } from '@/lib/export'
-import type { LoadedVideo } from '@/lib/media'
+import type { LoadedMedia } from '@/lib/media'
 
 export const Route = createFileRoute('/')({
   component: Editor,
 })
 
+// Timeline filmstrip tile count; stills just repeat their own frame.
+const STRIP_TILES = 14
+
 type UiState =
   | { phase: 'empty'; error?: string }
-  | { phase: 'loaded'; video: LoadedVideo; error?: string }
+  | { phase: 'loaded'; media: LoadedMedia; error?: string }
   | {
       phase: 'exporting'
-      video: LoadedVideo
+      media: LoadedMedia
       progress: number
       handle: ExportHandle
     }
   | {
       phase: 'done'
-      video: LoadedVideo
+      media: LoadedMedia
       downloadUrl: string
       fileName: string
       outputBytes: number
@@ -45,9 +53,9 @@ function errorMessage(err: unknown): string | null {
 
 function revokeState(s: UiState) {
   if (s.phase === 'loaded' || s.phase === 'exporting') {
-    URL.revokeObjectURL(s.video.url)
+    URL.revokeObjectURL(s.media.url)
   } else if (s.phase === 'done') {
-    URL.revokeObjectURL(s.video.url)
+    URL.revokeObjectURL(s.media.url)
     URL.revokeObjectURL(s.downloadUrl)
   }
 }
@@ -61,6 +69,10 @@ function triggerDownload(url: string, fileName: string) {
   a.remove()
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
 function Editor() {
   const [state, setState] = useState<UiState>({ phase: 'empty' })
   const [supported, setSupported] = useState<boolean | null>(null)
@@ -69,12 +81,25 @@ function Editor() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Mirror state into a ref so async export callbacks can read the latest value
-  // without going stale (they compare the in-flight handle against current state).
+  // Mirror state into refs so async export callbacks and the rAF clock read the
+  // latest values without going stale.
   const stateRef = useRef(state)
   stateRef.current = state
+  const playingRef = useRef(playing)
+  const currentTimeRef = useRef(0)
 
-  const clipUrl = state.phase === 'empty' ? null : state.video.url
+  const media = state.phase === 'empty' ? null : state.media
+  const clipUrl = media?.url ?? null
+  const clipKind = media?.kind ?? null
+
+  const setTime = useCallback((t: number) => {
+    currentTimeRef.current = t
+    setCurrentTime(t)
+  }, [])
+
+  useEffect(() => {
+    playingRef.current = playing
+  }, [playing])
 
   // Client-only capability probe (touches WebCodecs, never runs during SSR).
   useEffect(() => {
@@ -95,30 +120,48 @@ function Editor() {
   // Release any object URLs held at unmount.
   useEffect(() => () => revokeState(stateRef.current), [])
 
-  // Drive the playhead. While paused the value doesn't change, so the setState
-  // bails out and this costs nothing.
+  // Unified playhead clock. Video: mirror the element. Image: advance a virtual
+  // time while playing, stopping at the clip's fixed duration.
   useEffect(() => {
     if (clipUrl == null) return
-    let raf = requestAnimationFrame(function tick() {
-      const v = videoRef.current
-      if (v) setCurrentTime(v.currentTime)
+    let raf = 0
+    let lastTs: number | null = null
+    const tick = (ts: number) => {
+      const s = stateRef.current
+      if (s.phase !== 'empty') {
+        if (s.media.kind === 'video') {
+          const v = videoRef.current
+          if (v) setTime(v.currentTime)
+        } else if (playingRef.current && lastTs != null) {
+          const dur = s.media.durationSec ?? DEFAULT_IMAGE_DURATION_SEC
+          let next = currentTimeRef.current + (ts - lastTs) / 1000
+          if (next >= dur) {
+            next = dur
+            setPlaying(false)
+          }
+          setTime(next)
+        }
+      }
+      lastTs = ts
       raf = requestAnimationFrame(tick)
-    })
+    }
+    raf = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(raf)
     }
-  }, [clipUrl])
+  }, [clipUrl, setTime])
 
-  // Filmstrip thumbnails for the timeline + media bin, once per loaded clip.
+  // Filmstrip thumbnails for the timeline + media bin (video only; stills reuse
+  // their own frame, set at load time).
   useEffect(() => {
-    if (clipUrl == null) return
+    if (clipUrl == null || clipKind !== 'video') return
     let alive = true
     generateFilmstrip(clipUrl).then(
       (frames) => {
         if (!alive || frames.length === 0) return
         setState((prev) => {
-          if (prev.phase === 'empty' || prev.video.url !== clipUrl) return prev
-          return { ...prev, video: { ...prev.video, thumbs: frames } }
+          if (prev.phase === 'empty' || prev.media.url !== clipUrl) return prev
+          return { ...prev, media: { ...prev.media, thumbs: frames } }
         })
       },
       () => {},
@@ -126,7 +169,7 @@ function Editor() {
     return () => {
       alive = false
     }
-  }, [clipUrl])
+  }, [clipUrl, clipKind])
 
   // Auto-download whenever we enter a fresh `done` state (new blob URL).
   const doneUrl = state.phase === 'done' ? state.downloadUrl : null
@@ -135,27 +178,35 @@ function Editor() {
     if (doneUrl != null && doneName != null) triggerDownload(doneUrl, doneName)
   }, [doneUrl, doneName])
 
-  const loadFile = useCallback((file: File) => {
-    revokeState(stateRef.current)
-    setPlaying(false)
-    setCurrentTime(0)
-    if (!isVideoFile(file)) {
-      setState({ phase: 'empty', error: "That doesn't look like a video file." })
-      return
-    }
-    const url = URL.createObjectURL(file)
-    setState({
-      phase: 'loaded',
-      video: {
-        file,
-        url,
-        name: file.name,
-        sizeBytes: file.size,
-        durationSec: null,
-        thumbs: [],
-      },
-    })
-  }, [])
+  const loadFile = useCallback(
+    (file: File) => {
+      revokeState(stateRef.current)
+      setPlaying(false)
+      setTime(0)
+      const kind = mediaKind(file)
+      if (kind == null) {
+        setState({
+          phase: 'empty',
+          error: "That doesn't look like a video or image file.",
+        })
+        return
+      }
+      const url = URL.createObjectURL(file)
+      setState({
+        phase: 'loaded',
+        media: {
+          file,
+          kind,
+          url,
+          name: file.name,
+          sizeBytes: file.size,
+          durationSec: kind === 'image' ? DEFAULT_IMAGE_DURATION_SEC : null,
+          thumbs: kind === 'image' ? Array(STRIP_TILES).fill(url) : [],
+        },
+      })
+    },
+    [setTime],
+  )
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -171,11 +222,11 @@ function Editor() {
     (e: React.SyntheticEvent<HTMLVideoElement>) => {
       const dur = e.currentTarget.duration
       setState((prev) =>
-        prev.phase !== 'empty' && prev.video.durationSec == null
+        prev.phase !== 'empty' && prev.media.durationSec == null
           ? {
               ...prev,
-              video: {
-                ...prev.video,
+              media: {
+                ...prev.media,
                 durationSec: Number.isFinite(dur) ? dur : null,
               },
             }
@@ -186,20 +237,38 @@ function Editor() {
   )
 
   const togglePlay = useCallback(() => {
-    const v = videoRef.current
-    if (!v) return
-    if (v.paused || v.ended) v.play().catch(() => {})
-    else v.pause()
-  }, [])
+    const s = stateRef.current
+    if (s.phase === 'empty') return
+    if (s.media.kind === 'video') {
+      const v = videoRef.current
+      if (!v) return
+      if (v.paused || v.ended) v.play().catch(() => {})
+      else v.pause()
+    } else {
+      const dur = s.media.durationSec ?? DEFAULT_IMAGE_DURATION_SEC
+      if (!playingRef.current && currentTimeRef.current >= dur) setTime(0)
+      setPlaying((p) => !p)
+    }
+  }, [setTime])
 
-  const seek = useCallback((t: number) => {
-    const v = videoRef.current
-    if (!v) return
-    const dur = Number.isFinite(v.duration) ? v.duration : t
-    const clamped = Math.min(Math.max(t, 0), dur)
-    v.currentTime = clamped
-    setCurrentTime(clamped)
-  }, [])
+  const seek = useCallback(
+    (t: number) => {
+      const s = stateRef.current
+      if (s.phase === 'empty') return
+      if (s.media.kind === 'video') {
+        const v = videoRef.current
+        if (!v) return
+        const dur = Number.isFinite(v.duration) ? v.duration : t
+        const clamped = clamp(t, 0, dur)
+        v.currentTime = clamped
+        setTime(clamped)
+      } else {
+        const dur = s.media.durationSec ?? DEFAULT_IMAGE_DURATION_SEC
+        setTime(clamp(t, 0, dur))
+      }
+    },
+    [setTime],
+  )
 
   // Space = play/pause, ←/→ = nudge 1s, Home/End = jump.
   useEffect(() => {
@@ -213,23 +282,22 @@ function Editor() {
       ) {
         return
       }
-      const v = videoRef.current
-      if (!v) return
+      if (stateRef.current.phase === 'empty') return
       if (e.code === 'Space') {
         e.preventDefault()
         if (!e.repeat) togglePlay()
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault()
-        seek(v.currentTime - 1)
+        seek(currentTimeRef.current - 1)
       } else if (e.code === 'ArrowRight') {
         e.preventDefault()
-        seek(v.currentTime + 1)
+        seek(currentTimeRef.current + 1)
       } else if (e.code === 'Home') {
         e.preventDefault()
         seek(0)
       } else if (e.code === 'End') {
         e.preventDefault()
-        seek(v.duration)
+        seek(Number.POSITIVE_INFINITY)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -242,19 +310,24 @@ function Editor() {
     const current = stateRef.current
     if (current.phase !== 'loaded' && current.phase !== 'done') return
     if (current.phase === 'done') URL.revokeObjectURL(current.downloadUrl)
-    const video = current.video
+    const activeMedia = current.media
 
-    const handle = exportVideo(video.file, {
-      onProgress: (fraction) => {
-        setState((prev) =>
-          prev.phase === 'exporting' && prev.handle === handle
-            ? { ...prev, progress: fraction }
-            : prev,
-        )
-      },
-    })
+    const onProgress = (fraction: number) => {
+      setState((prev) =>
+        prev.phase === 'exporting' && prev.handle === handle
+          ? { ...prev, progress: fraction }
+          : prev,
+      )
+    }
+    const handle =
+      activeMedia.kind === 'image'
+        ? exportImage(activeMedia.file, {
+            durationSec: activeMedia.durationSec ?? DEFAULT_IMAGE_DURATION_SEC,
+            onProgress,
+          })
+        : exportVideo(activeMedia.file, { onProgress })
 
-    setState({ phase: 'exporting', video, progress: 0, handle })
+    setState({ phase: 'exporting', media: activeMedia, progress: 0, handle })
 
     handle.done.then(
       (result) => {
@@ -266,7 +339,7 @@ function Editor() {
           : undefined
         setState({
           phase: 'done',
-          video,
+          media,
           downloadUrl,
           fileName: result.suggestedFileName,
           outputBytes: result.blob.size,
@@ -279,8 +352,8 @@ function Editor() {
         const message = errorMessage(err)
         setState(
           message != null
-            ? { phase: 'loaded', video, error: message }
-            : { phase: 'loaded', video },
+            ? { phase: 'loaded', media, error: message }
+            : { phase: 'loaded', media },
         )
       },
     )
@@ -289,38 +362,37 @@ function Editor() {
   const cancelExport = useCallback(() => {
     const s = stateRef.current
     if (s.phase !== 'exporting') return
-    const video = s.video
+    const activeMedia = s.media
     s.handle.cancel().catch(() => {})
-    setState({ phase: 'loaded', video })
+    setState({ phase: 'loaded', media: activeMedia })
   }, [])
 
   const dismissDone = useCallback(() => {
     const s = stateRef.current
     if (s.phase !== 'done') return
     URL.revokeObjectURL(s.downloadUrl)
-    setState({ phase: 'loaded', video: s.video })
+    setState({ phase: 'loaded', media: s.media })
   }, [])
 
   const dismissError = useCallback(() => {
     setState((prev) => {
-      if (prev.phase === 'loaded') return { phase: 'loaded', video: prev.video }
+      if (prev.phase === 'loaded') return { phase: 'loaded', media: prev.media }
       if (prev.phase === 'empty') return { phase: 'empty' }
       return prev
     })
   }, [])
 
-  const video = state.phase === 'empty' ? null : state.video
   const errorText =
     state.phase === 'loaded' || state.phase === 'empty'
       ? (state.error ?? null)
       : null
   const firstThumb =
-    video != null && video.thumbs.length > 0 ? video.thumbs[0] : null
+    media != null && media.thumbs.length > 0 ? media.thumbs[0] : null
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-bg text-ink">
       <TopBar
-        projectName={video ? video.name : null}
+        projectName={media ? media.name : null}
         canExport={state.phase === 'loaded' || state.phase === 'done'}
         supported={supported}
         exporting={
@@ -333,11 +405,11 @@ function Editor() {
       <div className="flex min-h-0 flex-1">
         <MediaPanel
           clip={
-            video
+            media
               ? {
-                  name: video.name,
-                  sizeBytes: video.sizeBytes,
-                  durationSec: video.durationSec,
+                  name: media.name,
+                  sizeBytes: media.sizeBytes,
+                  durationSec: media.durationSec,
                   thumb: firstThumb,
                 }
               : null
@@ -346,7 +418,7 @@ function Editor() {
           onPickFile={pickFile}
         />
         <PreviewStage
-          url={video ? video.url : null}
+          media={media ? { url: media.url, kind: media.kind } : null}
           videoRef={videoRef}
           dropDisabled={state.phase === 'exporting'}
           onLoadedMetadata={onLoadedMetadata}
@@ -359,11 +431,11 @@ function Editor() {
 
       <Timeline
         clip={
-          video
+          media
             ? {
-                name: video.name,
-                durationSec: video.durationSec,
-                thumbs: video.thumbs,
+                name: media.name,
+                durationSec: media.durationSec,
+                thumbs: media.thumbs,
               }
             : null
         }
@@ -376,7 +448,7 @@ function Editor() {
       <input
         ref={fileInputRef}
         type="file"
-        accept="video/*"
+        accept="video/*,image/*"
         className="hidden"
         onChange={onFileInputChange}
       />

@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { IconExport } from './icons'
+import type { MediaKind } from '@/lib/media'
 
 interface PreviewStageProps {
-  url: string | null
+  media: { url: string; kind: MediaKind } | null
   videoRef: React.RefObject<HTMLVideoElement | null>
   dropDisabled: boolean
   onLoadedMetadata: (e: React.SyntheticEvent<HTMLVideoElement>) => void
@@ -13,7 +14,7 @@ interface PreviewStageProps {
 }
 
 export function PreviewStage({
-  url,
+  media,
   videoRef,
   dropDisabled,
   onLoadedMetadata,
@@ -54,52 +55,63 @@ export function PreviewStage({
       }}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(79,140,255,0.06),transparent)] p-6"
+      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(79,140,255,0.05),transparent)] p-5"
     >
-      {url ? (
-        <video
-          key={url}
-          ref={videoRef}
-          src={url}
-          playsInline
-          onLoadedMetadata={onLoadedMetadata}
-          onPlay={() => {
-            onPlayingChange(true)
-          }}
-          onPause={() => {
-            onPlayingChange(false)
-          }}
-          onEnded={() => {
-            onPlayingChange(false)
-          }}
-          onClick={onTogglePlay}
-          className="max-h-full max-w-full cursor-pointer rounded-[4px] shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_40px_120px_-30px_rgba(0,0,0,0.9)]"
-        />
-      ) : (
-        <div
-          className={`flex flex-col items-center gap-4 rounded-xl border-2 border-dashed px-14 py-16 text-center transition-colors ${
-            dragOver ? 'border-accent bg-accent/5' : 'border-edge'
-          }`}
-        >
-          <IconExport className="h-9 w-9 text-muted" />
-          <div>
-            <p className="text-sm text-ink">Drop a video anywhere</p>
-            <p className="mt-1 text-xs text-muted">MP4, MOV, WebM or MKV</p>
-          </div>
-          <button
-            type="button"
-            onClick={onPickFile}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition hover:brightness-110"
-          >
-            Import media
-          </button>
-        </div>
-      )}
+      {/* The project frame: always a 16:9 black canvas, sized to fill the stage. */}
+      <div className="relative aspect-video h-full max-h-full w-auto max-w-full overflow-hidden rounded-[3px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_40px_120px_-30px_rgba(0,0,0,0.9)]">
+        {media?.kind === 'video' && (
+          <video
+            key={media.url}
+            ref={videoRef}
+            src={media.url}
+            playsInline
+            onLoadedMetadata={onLoadedMetadata}
+            onPlay={() => {
+              onPlayingChange(true)
+            }}
+            onPause={() => {
+              onPlayingChange(false)
+            }}
+            onEnded={() => {
+              onPlayingChange(false)
+            }}
+            onClick={onTogglePlay}
+            className="h-full w-full cursor-pointer object-contain"
+          />
+        )}
 
-      {url != null && dragOver && (
-        <div className="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent/10">
+        {media?.kind === 'image' && (
+          <img
+            key={media.url}
+            src={media.url}
+            alt=""
+            draggable={false}
+            onClick={onTogglePlay}
+            className="h-full w-full cursor-pointer object-contain"
+          />
+        )}
+
+        {media == null && (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-center">
+            <IconExport className="h-7 w-7 text-muted/40" />
+            <div>
+              <p className="text-sm text-muted/70">Drop a video or image</p>
+              <button
+                type="button"
+                onClick={onPickFile}
+                className="mt-2 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white transition hover:brightness-110"
+              >
+                Import media
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-4 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent/10">
           <span className="rounded-md bg-bg/85 px-3 py-1.5 text-sm text-ink">
-            Drop to replace clip
+            {media == null ? 'Drop to import' : 'Drop to replace'}
           </span>
         </div>
       )}
