@@ -78,6 +78,7 @@ function Editor() {
   const [supported, setSupported] = useState<boolean | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
+  const [clipSelected, setClipSelected] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -183,6 +184,7 @@ function Editor() {
       revokeState(stateRef.current)
       setPlaying(false)
       setTime(0)
+      setClipSelected(false)
       const kind = mediaKind(file)
       if (kind == null) {
         setState({
@@ -298,6 +300,8 @@ function Editor() {
       } else if (e.code === 'End') {
         e.preventDefault()
         seek(Number.POSITIVE_INFINITY)
+      } else if (e.code === 'Escape') {
+        setClipSelected(false)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -339,7 +343,7 @@ function Editor() {
           : undefined
         setState({
           phase: 'done',
-          media,
+          media: activeMedia,
           downloadUrl,
           fileName: result.suggestedFileName,
           outputBytes: result.blob.size,
@@ -352,8 +356,8 @@ function Editor() {
         const message = errorMessage(err)
         setState(
           message != null
-            ? { phase: 'loaded', media, error: message }
-            : { phase: 'loaded', media },
+            ? { phase: 'loaded', media: activeMedia, error: message }
+            : { phase: 'loaded', media: activeMedia },
         )
       },
     )
@@ -441,8 +445,15 @@ function Editor() {
         }
         currentTime={currentTime}
         playing={playing}
+        selected={clipSelected}
         onTogglePlay={togglePlay}
         onSeek={seek}
+        onSelect={() => {
+          setClipSelected(true)
+        }}
+        onDeselect={() => {
+          setClipSelected(false)
+        }}
       />
 
       <input

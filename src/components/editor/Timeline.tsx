@@ -1,5 +1,7 @@
 import { useRef } from 'react'
 import {
+  IconChevronLeft,
+  IconChevronRight,
   IconCopy,
   IconPause,
   IconPlay,
@@ -8,7 +10,7 @@ import {
   IconSkipStart,
   IconTrash,
 } from './icons'
-import { formatRulerTime, formatTimecode } from '@/lib/media'
+import { formatDuration, formatRulerTime, formatTimecode } from '@/lib/media'
 
 export interface TimelineClip {
   name: string
@@ -20,8 +22,11 @@ interface TimelineProps {
   clip: TimelineClip | null
   currentTime: number
   playing: boolean
+  selected: boolean
   onTogglePlay: () => void
   onSeek: (t: number) => void
+  onSelect: () => void
+  onDeselect: () => void
 }
 
 /** Major-tick spacing that yields ≤10 labels across the ruler. */
@@ -45,8 +50,11 @@ export function Timeline({
   clip,
   currentTime,
   playing,
+  selected,
   onTogglePlay,
   onSeek,
+  onSelect,
+  onDeselect,
 }: TimelineProps) {
   const scrubRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -147,6 +155,9 @@ export function Timeline({
         <div
           ref={scrubRef}
           onPointerDown={(e) => {
+            // Reaches here only when the pointer isn't on the clip (the clip
+            // stops propagation), so a press on the ruler/empty area deselects.
+            onDeselect()
             if (duration == null) return
             draggingRef.current = true
             e.currentTarget.setPointerCapture(e.pointerId)
@@ -192,30 +203,58 @@ export function Timeline({
             })}
           </div>
 
-          <div className="mt-2">
+          <div className="relative mt-2">
             {clip ? (
-              <div className="relative h-14 overflow-hidden rounded-md border border-edge bg-raised">
-                {clip.thumbs.length > 0 ? (
-                  <div className="flex h-full w-full">
-                    {clip.thumbs.map((src, i) => (
-                      <img
-                        key={i}
-                        src={src}
-                        alt=""
-                        draggable={false}
-                        className="h-full min-w-0 flex-1 object-cover"
-                      />
-                    ))}
+              <div
+                onClick={onSelect}
+                onPointerDown={(e) => {
+                  // Keep the clip press from bubbling to the scrub handler, which
+                  // would seek and deselect; a tap on the clip only selects it.
+                  e.stopPropagation()
+                }}
+                className="relative h-14 cursor-pointer"
+              >
+                <div className="absolute inset-0 overflow-hidden rounded-[11px] bg-black">
+                  {clip.thumbs.length > 0 ? (
+                    <div className="flex h-full w-full">
+                      {clip.thumbs.map((src, i) => (
+                        <img
+                          key={i}
+                          src={src}
+                          alt=""
+                          draggable={false}
+                          className="h-full min-w-0 flex-1 object-cover"
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="h-full w-full animate-pulse bg-linear-to-r from-raised via-edge/60 to-raised" />
+                  )}
+                  <span className="absolute bottom-1 left-1.5 max-w-[60%] truncate rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white/90">
+                    {clip.name}
+                  </span>
+                </div>
+
+                {/* Selection chrome — mirrors the iOS TrimChromeOverlay: a 3px
+                    white border at r=13 with 18px filled handle brackets bearing
+                    chevrons, overhanging 3px top/bottom. */}
+                {selected && (
+                  <div className="pointer-events-none absolute -inset-y-[3px] inset-x-0 z-20">
+                    <div className="absolute inset-0 rounded-[13px] border-[3px] border-select" />
+                    <div className="absolute -left-[18px] top-0 bottom-0 flex w-[18px] items-center justify-center rounded-l-[13px] bg-select">
+                      <IconChevronLeft className="h-3.5 w-3.5 text-black/70" />
+                    </div>
+                    <div className="absolute -right-[18px] top-0 bottom-0 flex w-[18px] items-center justify-center rounded-r-[13px] bg-select">
+                      <IconChevronRight className="h-3.5 w-3.5 text-black/70" />
+                    </div>
+                    <span className="absolute left-1.5 top-1.5 rounded-full bg-black/55 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white">
+                      {formatDuration(clip.durationSec)}
+                    </span>
                   </div>
-                ) : (
-                  <div className="h-full w-full animate-pulse bg-linear-to-r from-raised via-edge/60 to-raised" />
                 )}
-                <span className="absolute bottom-1 left-1.5 max-w-[60%] truncate rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white/90">
-                  {clip.name}
-                </span>
               </div>
             ) : (
-              <div className="flex h-14 items-center justify-center rounded-md border border-dashed border-edge/80 text-xs text-muted">
+              <div className="flex h-14 items-center justify-center rounded-[11px] border border-dashed border-edge/80 text-xs text-muted">
                 Import a clip to start
               </div>
             )}
@@ -227,8 +266,8 @@ export function Timeline({
               style={{ left: `${playheadPct.toString()}%` }}
             >
               <div className="pointer-events-auto absolute inset-y-0 left-1/2 w-3 -translate-x-1/2 cursor-grab active:cursor-grabbing" />
-              <div className="absolute left-1/2 top-0 h-3.5 w-[9px] -translate-x-1/2 rounded-[2px] bg-ink shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
-              <div className="absolute bottom-0 left-1/2 top-1 w-[2px] -translate-x-1/2 bg-ink/90" />
+              <div className="absolute left-1/2 top-0 h-3.5 w-[9px] -translate-x-1/2 rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
+              <div className="absolute inset-y-0 left-1/2 top-1 w-[3px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.6)]" />
             </div>
           )}
         </div>

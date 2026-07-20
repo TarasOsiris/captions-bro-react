@@ -55,7 +55,7 @@ export function PreviewStage({
       }}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(79,140,255,0.05),transparent)] p-5"
+      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-5"
     >
       {/* The project frame: always a 16:9 black canvas, sized to fill the stage. */}
       <div className="relative aspect-video h-full max-h-full w-auto max-w-full overflow-hidden rounded-[3px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_40px_120px_-30px_rgba(0,0,0,0.9)]">

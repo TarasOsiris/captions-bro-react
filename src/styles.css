@@ -7,7 +7,11 @@
   --color-edge: #262c33;
   --color-ink: #e8ebee;
   --color-muted: #8b94a0;
-  --color-accent: #4f8cff;
+  /* iOS app accent (AccentColor asset, dark mode #A889FF). */
+  --color-accent: #a889ff;
+  --color-accent-deep: #7c3aed;
+  /* iOS timeline selection chrome (white in dark mode). */
+  --color-select: #ffffff;
   --color-stage: #060709;
   --font-sans:
     'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -32,5 +36,5 @@ body {
 }
 
 ::selection {
-  background: rgb(79 140 255 / 0.35);
+  background: rgb(168 137 255 / 0.35);
 }

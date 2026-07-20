@@ -152,6 +152,40 @@ export function IconCaptions({ className }: IconProps) {
   )
 }
 
+export function IconChevronLeft({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m14.5 6-6 6 6 6" />
+    </svg>
+  )
+}
+
+export function IconChevronRight({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m9.5 6 6 6-6 6" />
+    </svg>
+  )
+}
+
 export function IconScissors({ className }: IconProps) {
   return (
     <StrokeSvg className={className}>

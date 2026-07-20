@@ -20,7 +20,7 @@ export function TopBar({
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-edge bg-surface px-3">
       <div className="flex items-center gap-2.5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-accent to-[#2f5fd0] shadow-[0_2px_8px_-2px_rgba(79,140,255,0.5)]">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-accent to-accent-deep shadow-[0_2px_8px_-2px_rgba(168,137,255,0.5)]">
           <svg
             viewBox="0 0 24 24"
             fill="white"
