@@ -1,22 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   ExportCancelledError,
   canExportH264,
   exportImage,
   exportVideo,
 } from '@/lib/export'
-import {
-  DEFAULT_IMAGE_DURATION_SEC,
-  formatBytes,
-  mediaKind,
-} from '@/lib/media'
+import { DEFAULT_IMAGE_DURATION_SEC, formatBytes, mediaKind } from '@/lib/media'
 import { generateFilmstrip } from '@/lib/thumbs'
 import { MediaPanel } from '@/components/editor/MediaPanel'
 import { PreviewStage } from '@/components/editor/PreviewStage'
 import { Timeline } from '@/components/editor/Timeline'
 import { TopBar } from '@/components/editor/TopBar'
-import { IconCheck, IconDownload, IconX } from '@/components/editor/icons'
 import type { ExportHandle } from '@/lib/export'
 import type { LoadedMedia } from '@/lib/media'
 
@@ -28,8 +24,8 @@ export const Route = createFileRoute('/')({
 const STRIP_TILES = 14
 
 type UiState =
-  | { phase: 'empty'; error?: string }
-  | { phase: 'loaded'; media: LoadedMedia; error?: string }
+  | { phase: 'empty' }
+  | { phase: 'loaded'; media: LoadedMedia }
   | {
       phase: 'exporting'
       media: LoadedMedia
@@ -41,8 +37,6 @@ type UiState =
       media: LoadedMedia
       downloadUrl: string
       fileName: string
-      outputBytes: number
-      warning?: string
     }
 
 function errorMessage(err: unknown): string | null {
@@ -187,10 +181,8 @@ function Editor() {
       setClipSelected(false)
       const kind = mediaKind(file)
       if (kind == null) {
-        setState({
-          phase: 'empty',
-          error: "That doesn't look like a video or image file.",
-        })
+        toast.error("That doesn't look like a video or image file.")
+        setState({ phase: 'empty' })
         return
       }
       const url = URL.createObjectURL(file)
@@ -338,27 +330,34 @@ function Editor() {
         const s = stateRef.current
         if (s.phase !== 'exporting' || s.handle !== handle) return
         const downloadUrl = URL.createObjectURL(result.blob)
-        const warning = result.discardedTracks.length
-          ? "Audio was dropped — this browser can't encode its codec, so the exported video is silent."
-          : undefined
         setState({
           phase: 'done',
           media: activeMedia,
           downloadUrl,
           fileName: result.suggestedFileName,
-          outputBytes: result.blob.size,
-          warning,
         })
+        toast.success('Export complete — download started', {
+          description: `${result.suggestedFileName} · ${formatBytes(result.blob.size)}`,
+          action: {
+            label: 'Download again',
+            onClick: () => {
+              triggerDownload(downloadUrl, result.suggestedFileName)
+            },
+          },
+          duration: 8000,
+        })
+        if (result.discardedTracks.length) {
+          toast.warning(
+            "Audio was dropped — this browser can't encode its codec, so the exported video is silent.",
+          )
+        }
       },
       (err: unknown) => {
         const s = stateRef.current
         if (s.phase !== 'exporting' || s.handle !== handle) return
         const message = errorMessage(err)
-        setState(
-          message != null
-            ? { phase: 'loaded', media: activeMedia, error: message }
-            : { phase: 'loaded', media: activeMedia },
-        )
+        if (message != null) toast.error(message)
+        setState({ phase: 'loaded', media: activeMedia })
       },
     )
   }, [])
@@ -371,25 +370,6 @@ function Editor() {
     setState({ phase: 'loaded', media: activeMedia })
   }, [])
 
-  const dismissDone = useCallback(() => {
-    const s = stateRef.current
-    if (s.phase !== 'done') return
-    URL.revokeObjectURL(s.downloadUrl)
-    setState({ phase: 'loaded', media: s.media })
-  }, [])
-
-  const dismissError = useCallback(() => {
-    setState((prev) => {
-      if (prev.phase === 'loaded') return { phase: 'loaded', media: prev.media }
-      if (prev.phase === 'empty') return { phase: 'empty' }
-      return prev
-    })
-  }, [])
-
-  const errorText =
-    state.phase === 'loaded' || state.phase === 'empty'
-      ? (state.error ?? null)
-      : null
   const firstThumb =
     media != null && media.thumbs.length > 0 ? media.thumbs[0] : null
 
@@ -463,62 +443,6 @@ function Editor() {
         className="hidden"
         onChange={onFileInputChange}
       />
-
-      <div className="fixed bottom-[15rem] right-4 z-40 flex w-80 flex-col gap-2">
-        {errorText != null && (
-          <div className="flex items-start gap-3 rounded-xl border border-[#ff7a7a]/30 bg-surface p-4 shadow-2xl">
-            <p className="min-w-0 flex-1 text-sm text-[#ff9a9a]">{errorText}</p>
-            <button
-              type="button"
-              onClick={dismissError}
-              title="Dismiss"
-              className="shrink-0 text-muted transition hover:text-ink"
-            >
-              <IconX className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        {state.phase === 'done' && (
-          <div className="rounded-xl border border-edge bg-surface p-4 shadow-2xl">
-            <div className="flex items-start gap-3">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
-                <IconCheck className="h-4 w-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-ink">
-                  Export complete — download started
-                </p>
-                <p className="mt-0.5 truncate font-mono text-[11px] text-muted">
-                  {state.fileName} · {formatBytes(state.outputBytes)}
-                </p>
-                {state.warning != null && (
-                  <p className="mt-2 text-xs text-[#f5c56b]">{state.warning}</p>
-                )}
-                <div className="mt-3 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      triggerDownload(state.downloadUrl, state.fileName)
-                    }}
-                    className="flex items-center gap-1.5 text-xs font-medium text-accent transition hover:brightness-110"
-                  >
-                    <IconDownload className="h-3.5 w-3.5" />
-                    Download again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={dismissDone}
-                    className="text-xs text-muted transition hover:text-ink"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   )
 }

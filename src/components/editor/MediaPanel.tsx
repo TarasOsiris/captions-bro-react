@@ -1,10 +1,11 @@
+import { Captions, Film, Music, Plus, Type } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import {
-  IconCaptions,
-  IconFilm,
-  IconMusic,
-  IconPlus,
-  IconType,
-} from './icons'
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
 
 export interface MediaClipCard {
@@ -29,18 +30,36 @@ function RailItem({
   label: string
   active?: boolean
 }) {
-  return (
-    <button
-      type="button"
-      disabled={!active}
-      title={active ? label : `${label} — coming soon`}
-      className={`flex w-12 flex-col items-center gap-1 rounded-lg py-2 text-[10px] font-medium ${
-        active ? 'bg-raised text-ink' : 'cursor-default text-muted/50'
-      }`}
+  const button = (
+    <Button
+      variant="ghost"
+      aria-disabled={!active}
+      onClick={
+        active
+          ? undefined
+          : (e) => {
+              e.preventDefault()
+            }
+      }
+      className={cn(
+        'h-auto w-12 flex-col gap-1 rounded-lg px-0 py-2 text-[10px] font-medium',
+        active
+          ? 'bg-raised text-ink hover:bg-raised hover:text-ink'
+          : 'cursor-default text-muted/50 hover:bg-transparent hover:text-muted/50',
+      )}
     >
       {icon}
       {label}
-    </button>
+    </Button>
+  )
+
+  if (active) return button
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent side="right">{label} — coming soon</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -48,13 +67,10 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
   return (
     <aside className="flex shrink-0 border-r border-edge bg-surface">
       <nav className="flex w-16 flex-col items-center gap-1 border-r border-edge/60 py-3">
-        <RailItem active icon={<IconFilm className="h-5 w-5" />} label="Media" />
-        <RailItem icon={<IconType className="h-5 w-5" />} label="Text" />
-        <RailItem icon={<IconMusic className="h-5 w-5" />} label="Audio" />
-        <RailItem
-          icon={<IconCaptions className="h-5 w-5" />}
-          label="Captions"
-        />
+        <RailItem active icon={<Film className="h-5 w-5" />} label="Media" />
+        <RailItem icon={<Type className="h-5 w-5" />} label="Text" />
+        <RailItem icon={<Music className="h-5 w-5" />} label="Audio" />
+        <RailItem icon={<Captions className="h-5 w-5" />} label="Captions" />
       </nav>
 
       <div className="flex w-72 flex-col">
@@ -62,15 +78,21 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
           <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             Media
           </span>
-          <button
-            type="button"
-            onClick={onPickFile}
-            disabled={disabled}
-            title="Import media"
-            className="flex h-6 w-6 items-center justify-center rounded-md border border-edge text-muted transition hover:border-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <IconPlus className="h-3.5 w-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={onPickFile}
+                disabled={disabled}
+                aria-label="Import media"
+                className="h-6 w-6"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Import media</TooltipContent>
+          </Tooltip>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3 pt-1">
@@ -86,7 +108,7 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
                   />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-muted/60">
-                    <IconFilm className="h-6 w-6" />
+                    <Film className="h-6 w-6" />
                   </div>
                 )}
                 <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[10px] tabular-nums text-white/90">
@@ -101,15 +123,15 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
               </figcaption>
             </figure>
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="outline"
               onClick={onPickFile}
               disabled={disabled}
-              className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-edge text-muted transition hover:border-muted hover:text-ink disabled:cursor-not-allowed"
+              className="flex aspect-video h-auto w-full flex-col gap-2 rounded-md border-dashed text-[11px]"
             >
-              <IconPlus className="h-4 w-4" />
-              <span className="text-[11px]">Import media</span>
-            </button>
+              <Plus className="h-4 w-4" />
+              <span>Import media</span>
+            </Button>
           )}
         </div>
       </div>

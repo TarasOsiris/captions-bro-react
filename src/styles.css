@@ -15,6 +15,29 @@
   --color-stage: #060709;
   --font-sans:
     'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* shadcn/ui semantic aliases → the bespoke tokens above, so library
+     components (bg-primary, border-border, ring-ring…) inherit this theme.
+     Deliberately NOT aliased: `accent` (already the brand purple) and `muted`
+     (already gray text = shadcn's muted-foreground) — components write ghost
+     hovers / muted surfaces against raised/surface directly. */
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-ink);
+  --color-popover: var(--color-raised);
+  --color-popover-foreground: var(--color-ink);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-raised);
+  --color-secondary-foreground: var(--color-ink);
+  --color-muted-foreground: var(--color-muted);
+  --color-border: var(--color-edge);
+  --color-input: var(--color-edge);
+  --color-ring: var(--color-accent);
+  --color-destructive: #ff7a7a;
+  --color-destructive-foreground: #ffffff;
+  --radius: 0.625rem;
 }
 
 * {

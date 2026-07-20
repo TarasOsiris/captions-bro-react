@@ -1,4 +1,12 @@
-import { IconExport, IconX } from './icons'
+import { Upload, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 
 interface TopBarProps {
   projectName: string | null
@@ -42,9 +50,9 @@ export function TopBar({
       </span>
 
       {supported === false && (
-        <span className="hidden shrink-0 items-center rounded-md border border-[#f5b344]/30 bg-[#f5b344]/10 px-2.5 py-1 text-[11px] text-[#f5c56b] sm:flex">
+        <Badge variant="warning" className="hidden shrink-0 sm:flex">
           H.264 encode unavailable — try Chrome
-        </span>
+        </Badge>
       )}
 
       {exporting ? (
@@ -52,34 +60,37 @@ export function TopBar({
           <span className="shrink-0 text-[11px] text-muted">
             {exporting.progress >= 0.99 ? 'Finalizing…' : 'Encoding…'}
           </span>
-          <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-edge">
-            <div
-              className="h-full rounded-full bg-accent transition-[width] duration-200 ease-out"
-              style={{ width: `${Math.max(2, exporting.progress * 100)}%` }}
-            />
-          </div>
+          <Progress
+            value={Math.max(2, exporting.progress * 100)}
+            className="min-w-0 flex-1"
+          />
           <span className="shrink-0 font-mono text-[11px] tabular-nums text-accent">
             {Math.round(exporting.progress * 100)}%
           </span>
-          <button
-            type="button"
-            onClick={onCancelExport}
-            title="Cancel export"
-            className="shrink-0 text-muted transition hover:text-ink"
-          >
-            <IconX className="h-3.5 w-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onCancelExport}
+                aria-label="Cancel export"
+                className="h-6 w-6"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Cancel export</TooltipContent>
+          </Tooltip>
         </div>
       ) : (
-        <button
-          type="button"
+        <Button
           onClick={onExport}
           disabled={!canExport || supported === false}
-          className="flex shrink-0 items-center gap-2 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          className="shrink-0"
         >
-          <IconExport className="h-4 w-4" />
+          <Upload className="h-4 w-4" />
           Export
-        </button>
+        </Button>
       )}
     </header>
   )

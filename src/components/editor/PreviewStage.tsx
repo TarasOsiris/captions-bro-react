@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
-import { IconExport } from './icons'
+import { Upload } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import type { MediaKind } from '@/lib/media'
 
 interface PreviewStageProps {
@@ -93,16 +94,12 @@ export function PreviewStage({
 
         {media == null && (
           <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-center">
-            <IconExport className="h-7 w-7 text-muted/40" />
+            <Upload className="h-7 w-7 text-muted/40" />
             <div>
               <p className="text-sm text-muted/70">Drop a video or image</p>
-              <button
-                type="button"
-                onClick={onPickFile}
-                className="mt-2 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white transition hover:brightness-110"
-              >
+              <Button onClick={onPickFile} className="mt-2">
                 Import media
-              </button>
+              </Button>
             </div>
           </div>
         )}
