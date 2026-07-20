@@ -15,3 +15,14 @@ nixpkgsArchive = 'b6018f87da91d19d0ab4cf979885689b469cdd41'
 # native bindings are actually installed; --libc=glibc guards against npm
 # mis-detecting libc under the Nix-built Node.
 cmds = ['npx -y npm@11 ci --libc=glibc']
+
+[phases.build]
+cmds = ['npm run build']
+
+# Run the Nitro node-server this build produces (.output/server/index.mjs),
+# listening on :3000. Pinning the start cmd keeps the container CMD explicit
+# and ensures Coolify runs the SSR server — NOT a static Caddy/nginx file
+# server. (Coolify only wraps output in Caddy when "Is it a static site?" is
+# on; keep that toggle OFF for this app.)
+[start]
+cmd = 'node .output/server/index.mjs'
