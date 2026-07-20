@@ -14,7 +14,10 @@ burn-in plugs directly into it.
 - **TanStack Start** (SSR + Nitro server) — React 19, Vite 8, TypeScript
 - **Tailwind CSS v4** (`@tailwindcss/vite`, tokens in `src/styles.css` via `@theme`)
 - **mediabunny** — in-browser demux/decode/encode over WebCodecs
-- Single route (`src/routes/index.tsx`); no backend logic, no database
+- Single route (`src/routes/index.tsx`) holding all editor state, composing the
+  video-editor shell from `src/components/editor/` (TopBar, MediaPanel,
+  PreviewStage, Timeline) with helpers in `src/lib/media.ts` (formatting) and
+  `src/lib/thumbs.ts` (filmstrip thumbnails); no backend logic, no database
 
 ## Commands
 

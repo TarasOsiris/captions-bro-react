@@ -3,10 +3,14 @@
 @theme {
   --color-bg: #0b0d10;
   --color-surface: #14181d;
+  --color-raised: #1b2129;
   --color-edge: #262c33;
   --color-ink: #e8ebee;
   --color-muted: #8b94a0;
   --color-accent: #4f8cff;
+  --color-stage: #060709;
+  --font-sans:
+    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 * {
@@ -15,13 +19,18 @@
 
 html,
 body {
-  min-height: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
   color: var(--color-ink);
   background-color: var(--color-bg);
-  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgb(79 140 255 / 0.35);
 }

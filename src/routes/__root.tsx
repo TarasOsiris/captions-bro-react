@@ -11,7 +11,19 @@ export const Route = createRootRoute({
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'Captions Bro — Video Captions in Your Browser' },
     ],
-    links: [{ rel: 'stylesheet', href: appCss }],
+    links: [
+      { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      {
+        rel: 'preconnect',
+        href: 'https://fonts.gstatic.com',
+        crossOrigin: 'anonymous',
+      },
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap',
+      },
+      { rel: 'stylesheet', href: appCss },
+    ],
     // TODO(analytics): add GA4 gtag script here once the property exists.
   }),
   shellComponent: RootDocument,
