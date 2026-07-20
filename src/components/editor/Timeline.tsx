@@ -226,6 +226,7 @@ export function Timeline({
               className="pointer-events-none absolute inset-y-0 z-10"
               style={{ left: `${playheadPct.toString()}%` }}
             >
+              <div className="pointer-events-auto absolute inset-y-0 left-1/2 w-3 -translate-x-1/2 cursor-grab active:cursor-grabbing" />
               <div className="absolute left-1/2 top-0 h-3.5 w-[9px] -translate-x-1/2 rounded-[2px] bg-ink shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
               <div className="absolute bottom-0 left-1/2 top-1 w-[2px] -translate-x-1/2 bg-ink/90" />
             </div>
