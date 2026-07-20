@@ -1,0 +1,17 @@
+# Coolify's nixpacks build broke twice over on the stock nixpkgs pin:
+#  - its nodejs_22 is 22.11.0, below the >=22.12 floor vite 8 / TanStack Start /
+#    nitro-nightly require (all the EBADENGINE warnings in the deploy log)
+#  - that Node bundles npm 10.9.0, which silently skips platform-specific
+#    optional deps (@rolldown/*, @tailwindcss/oxide-*, lightningcss-*) when
+#    installing from this npm-11 lockfile, so `vite build` dies with
+#    "Cannot find module '@rolldown/binding-linux-x64-gnu'"
+
+[phases.setup]
+# nixos-25.11 channel snapshot (2026-07): nodejs_22 -> 22.22.x
+nixpkgsArchive = 'b6018f87da91d19d0ab4cf979885689b469cdd41'
+
+[phases.install]
+# Install with the same npm major that wrote package-lock.json so the Linux
+# native bindings are actually installed; --libc=glibc guards against npm
+# mis-detecting libc under the Nix-built Node.
+cmds = ['npx -y npm@11 ci --libc=glibc']
