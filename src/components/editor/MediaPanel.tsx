@@ -5,18 +5,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { useEditorStore } from '@/store/editorStore'
+import { assetOf } from '@/lib/model/selectors'
 import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
 
-export interface MediaClipCard {
-  name: string
-  sizeBytes: number
-  durationSec: number | null
-  thumb: string | null
-}
-
 interface MediaPanelProps {
-  clip: MediaClipCard | null
   disabled: boolean
   onPickFile: () => void
 }
@@ -63,7 +57,13 @@ function RailItem({
   )
 }
 
-export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
+export function MediaPanel({ disabled, onPickFile }: MediaPanelProps) {
+  const project = useEditorStore((s) => s.project)
+  const selectedClipId = useEditorStore((s) => s.selectedClipId)
+  const selectClip = useEditorStore((s) => s.selectClip)
+
+  const clips = project.tracks.flatMap((t) => t.clips)
+
   return (
     <aside className="flex shrink-0 border-r border-edge bg-surface">
       <nav className="flex w-16 flex-col items-center gap-1 border-r border-edge/60 py-3">
@@ -95,33 +95,60 @@ export function MediaPanel({ clip, disabled, onPickFile }: MediaPanelProps) {
           </Tooltip>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3 pt-1">
-          {clip ? (
-            <figure>
-              <div className="relative aspect-video overflow-hidden rounded-md border border-edge bg-black ring-1 ring-accent/50">
-                {clip.thumb ? (
-                  <img
-                    src={clip.thumb}
-                    alt=""
-                    draggable={false}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-muted/60">
-                    <Film className="h-6 w-6" />
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 pt-1">
+          {clips.length > 0 ? (
+            clips.map((clip) => {
+              const asset = assetOf(project, clip)
+              const thumb = asset && asset.thumbs.length > 0 ? asset.thumbs[0] : null
+              return (
+                <button
+                  key={clip.id}
+                  type="button"
+                  onClick={() => {
+                    selectClip(clip.id)
+                  }}
+                  className={cn(
+                    'block w-full text-left',
+                    clip.id === selectedClipId ? 'opacity-100' : 'opacity-90',
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'relative aspect-video overflow-hidden rounded-md border bg-black',
+                      clip.id === selectedClipId
+                        ? 'border-select ring-1 ring-select/70'
+                        : 'border-edge ring-1 ring-transparent',
+                    )}
+                  >
+                    {thumb ? (
+                      <img
+                        src={thumb}
+                        alt=""
+                        draggable={false}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-muted/60">
+                        <Film className="h-6 w-6" />
+                      </div>
+                    )}
+                    <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[10px] tabular-nums text-white/90">
+                      {formatDuration(clip.duration)}
+                    </span>
                   </div>
-                )}
-                <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[10px] tabular-nums text-white/90">
-                  {formatDuration(clip.durationSec)}
-                </span>
-              </div>
-              <figcaption className="mt-1.5">
-                <p className="truncate text-xs text-ink">{clip.name}</p>
-                <p className="font-mono text-[10px] text-muted">
-                  {formatBytes(clip.sizeBytes)}
-                </p>
-              </figcaption>
-            </figure>
+                  <div className="mt-1.5">
+                    <p className="truncate text-xs text-ink">
+                      {asset?.name ?? clip.type}
+                    </p>
+                    {asset && (
+                      <p className="font-mono text-[10px] text-muted">
+                        {formatBytes(asset.sizeBytes)}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              )
+            })
           ) : (
             <Button
               variant="outline"

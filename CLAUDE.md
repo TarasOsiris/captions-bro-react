@@ -19,10 +19,45 @@ duration). Both return the same `ExportHandle`.
 - **TanStack Start** (SSR + Nitro server) — React 19, Vite 8, TypeScript
 - **Tailwind CSS v4** (`@tailwindcss/vite`, tokens in `src/styles.css` via `@theme`)
 - **mediabunny** — in-browser demux/decode/encode over WebCodecs
-- Single route (`src/routes/index.tsx`) holding all editor state, composing the
-  video-editor shell from `src/components/editor/` (TopBar, MediaPanel,
-  PreviewStage, Timeline) with helpers in `src/lib/media.ts` (formatting) and
-  `src/lib/thumbs.ts` (filmstrip thumbnails); no backend logic, no database
+- **Zustand + immer** — the editor store (`src/store/`), sliced into
+  document/playback/selection/export; read with atomic selectors, read
+  imperatively in rAF/async via `useEditorStore.getState()`
+- No backend logic, no database (persistence is client-side: localStorage +
+  IndexedDB, planned in `src/lib/persistence/`)
+
+### Layout
+
+- `src/lib/model/` — the domain: `Project → Track[] → Clip[]` tree + a
+  `MediaAsset` registry (`types.ts`), pure `factories.ts`/`selectors.ts`, and
+  `scene.ts` (`resolveScene(project, t)` → the clips live at a time).
+- `src/lib/render/compositor.ts` — `drawScene`, the ONE renderer (see below).
+- `src/lib/transform.ts` — `mediaRect` placement math (shared geometry).
+- `src/store/` — the Zustand store + slices.
+- `src/lib/render/mediaPool.ts` — the live `<video>`/`<img>` decode+audio elements
+  the preview draws from; `usePlayback` slaves them to the timeline clock.
+- `src/lib/persistence/` — `assetStore.ts` (IndexedDB media blobs) + `projectStore.ts`
+  (localStorage document JSON, blob-stripped); `usePersistence` hydrates + debounce-saves.
+- `src/hooks/` — orchestration: `usePlayback` (virtual-timeline clock),
+  `useMediaImport` (append clip + store blob), `useExport`, `useEditorKeyboard`,
+  `useUndoRedo` (snapshot-based, over the document), `usePersistence`.
+- `src/components/editor/` — the store-connected shell (TopBar, MediaPanel,
+  PreviewStage, Timeline); `src/components/ui/` — shadcn primitives.
+- `src/routes/index.tsx` — a thin shell that mounts the hooks and composes the
+  shell; it holds no domain state.
+
+### Commands (extra)
+
+- `npm test` — Vitest unit tests (pure model/render/transform logic).
+
+### Export
+
+`src/lib/export.ts` → `exportProject(project)` picks the path: the fast
+single-source encoder for an untrimmed single clip, else `exportTimeline` — a
+frame-by-frame composite through `drawScene` using a `VideoSampleSink` per clip.
+Audio in the composite path is mixed from all clips with an `OfflineAudioContext`
+(scheduled by `start`/`trimIn`/`duration`/`volume`) and encoded as AAC where an
+encoder exists; `ExportResult.silent` flags the case where audio existed but no
+AAC encoder was available (e.g. Firefox).
 
 ## Commands
 
@@ -47,6 +82,20 @@ All video processing is **client-side**. `src/lib/export.ts` is the single seam:
   Firefox). Output is MP4 with `fastStart: 'in-memory'` (moov atom at the front).
 - `canExportH264()` gates the UI (Chromium/Safari 26+ can encode H.264; the button
   is disabled otherwise).
+
+### Preview must always match export — one compositor
+
+WYSIWYG is **structural**: there is a single renderer, `drawScene` in
+`src/lib/render/compositor.ts`, and BOTH the preview and the export call it. The
+preview (`PreviewStage`) draws it onto a `<canvas>` on a rAF loop, using hidden
+`<video>`/`<img>` elements as decode + audio sources; the export (`export.ts`)
+calls the same `drawScene` per frame (mediabunny's `video.process` hook for
+video, `CanvasSource` for stills). Geometry comes from `mediaRect`
+(`src/lib/transform.ts`); the output canvas is the project's `canvas`
+(`project.canvas`, 16:9). Because both paths call one function, a new visual
+feature is written once (as a `DrawItem`/layer) and cannot drift between preview
+and export. The selection box/handles are a DOM overlay positioned by the same
+`mediaRect` — chrome, never composited, so never exported.
 
 ### Upgrade paths
 

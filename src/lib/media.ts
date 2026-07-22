@@ -14,18 +14,6 @@ export const DEFAULT_IMAGE_DURATION_SEC = 5
 
 export type MediaKind = 'video' | 'image'
 
-export interface LoadedMedia {
-  file: File
-  kind: MediaKind
-  url: string
-  name: string
-  sizeBytes: number
-  /** Video: read from metadata (null until known). Image: the default clip length. */
-  durationSec: number | null
-  /** Filmstrip frames (data/object URLs) for the timeline clip; empty while generating. */
-  thumbs: string[]
-}
-
 function hasExtension(name: string, extensions: string[]): boolean {
   const lower = name.toLowerCase()
   return extensions.some((ext) => lower.endsWith(ext))

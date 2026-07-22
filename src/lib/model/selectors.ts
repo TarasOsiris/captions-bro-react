@@ -1,0 +1,54 @@
+// Pure lookups over the document tree. Keep SSR-safe and testable.
+
+import type { Clip, MediaAsset, Project, Track } from './types'
+
+/** Every clip across all tracks, in track order. */
+export function allClips(project: Project): Clip[] {
+  return project.tracks.flatMap((t) => t.clips)
+}
+
+/** The first clip in document order, or null. In the single-clip MVP this is the
+ *  "active" clip; multi-track selection supersedes it later. */
+export function firstClip(project: Project): Clip | null {
+  for (const track of project.tracks) {
+    if (track.clips.length > 0) return track.clips[0]
+  }
+  return null
+}
+
+export function clipById(project: Project, id: string | null): Clip | null {
+  if (id == null) return null
+  for (const track of project.tracks) {
+    const clip = track.clips.find((c) => c.id === id)
+    if (clip) return clip
+  }
+  return null
+}
+
+export function trackOfClip(project: Project, id: string): Track | null {
+  return project.tracks.find((t) => t.clips.some((c) => c.id === id)) ?? null
+}
+
+export function assetOf(
+  project: Project,
+  clip: Clip | null,
+): MediaAsset | null {
+  if (!clip || clip.assetId == null) return null
+  return project.assets[clip.assetId] ?? null
+}
+
+/** Natural aspect ratio of a clip's asset, or null until dimensions are known. */
+export function clipAspect(project: Project, clip: Clip | null): number | null {
+  const asset = assetOf(project, clip)
+  if (!asset || asset.naturalWidth <= 0 || asset.naturalHeight <= 0) return null
+  return asset.naturalWidth / asset.naturalHeight
+}
+
+/** Total timeline duration = the furthest clip end across all tracks. */
+export function projectDuration(project: Project): number {
+  let end = 0
+  for (const clip of allClips(project)) {
+    end = Math.max(end, clip.start + clip.duration)
+  }
+  return end
+}
