@@ -28,16 +28,14 @@ export function TopBar({
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-edge bg-surface px-3">
       <div className="flex items-center gap-2.5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-accent to-accent-deep shadow-[0_2px_8px_-2px_rgba(168,137,255,0.5)]">
-          <svg
-            viewBox="0 0 24 24"
-            fill="white"
-            className="h-3.5 w-3.5"
-            aria-hidden="true"
-          >
-            <path d="M8 5.6v12.8a.8.8 0 0 0 1.23.67l10.05-6.4a.8.8 0 0 0 0-1.35L9.23 4.93A.8.8 0 0 0 8 5.6Z" />
-          </svg>
-        </div>
+        <img
+          src="/app-icon-192.png?v=2"
+          alt="Captions Bro"
+          width={28}
+          height={28}
+          decoding="async"
+          className="h-7 w-7 shrink-0 rounded-lg shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
+        />
         <span className="text-sm font-semibold tracking-tight text-ink">
           Captions Bro
         </span>

@@ -12,8 +12,14 @@ export const Route = createRootRoute({
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'Captions Bro — Video Captions in Your Browser' },
+      { name: 'theme-color', content: '#05060A' },
     ],
     links: [
+      // Favicon / app icons — same set as the captions-bro-site marketing site.
+      { rel: 'icon', href: '/favicon.ico?v=2', sizes: 'any' },
+      { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png?v=2' },
+      { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png?v=2' },
+      { rel: 'manifest', href: '/site.webmanifest' },
       { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
       {
         rel: 'preconnect',
