@@ -26,7 +26,20 @@ export const Route = createRootRoute({
       },
       { rel: 'stylesheet', href: appCss },
     ],
-    // TODO(analytics): add GA4 gtag script here once the property exists.
+    // GA4 (gtag.js): the async loader + the inline init snippet.
+    scripts: [
+      {
+        src: 'https://www.googletagmanager.com/gtag/js?id=G-9L6SRQ5WQV',
+        async: true,
+      },
+      {
+        children:
+          "window.dataLayer = window.dataLayer || [];\n" +
+          'function gtag(){dataLayer.push(arguments);}\n' +
+          "gtag('js', new Date());\n" +
+          "gtag('config', 'G-9L6SRQ5WQV');",
+      },
+    ],
   }),
   shellComponent: RootDocument,
 })

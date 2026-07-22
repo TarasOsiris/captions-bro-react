@@ -113,5 +113,6 @@ and export. The selection box/handles are a DOM overlay positioned by the same
   same `vite.config.ts` plugin order, `tsconfig.json`, prettier/eslint setup.
 - `src/routeTree.gen.ts` is **generated** by `npm run generate-routes` — committed,
   never hand-edited.
-- GA4 is added in `src/routes/__root.tsx`'s `head()` once the analytics property
-  exists (see the `TODO(analytics)` marker).
+- GA4 (`G-9L6SRQ5WQV`) is wired in `src/routes/__root.tsx`'s `head().scripts` —
+  the async `gtag.js` loader + the inline init snippet, server-rendered into
+  `<head>` so the tag is present on load.
