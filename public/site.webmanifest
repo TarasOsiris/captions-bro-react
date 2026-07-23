@@ -1,7 +1,7 @@
 {
   "name": "Captions Bro",
   "short_name": "Captions Bro",
-  "description": "iOS video editor with on-device AI captions, overlays, a teleprompter, and up to 4K export.",
+  "description": "In-browser video editor with AI captions, animated subtitles, and one-click H.264 MP4 export — nothing leaves your device.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
