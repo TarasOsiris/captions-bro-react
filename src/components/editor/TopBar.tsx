@@ -1,6 +1,12 @@
-import { Mail, Upload } from 'lucide-react'
+import { Mail, Moon, Sun, Upload } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { useTheme } from '@/hooks/useTheme'
 
 interface TopBarProps {
   projectName: string | null
@@ -15,6 +21,7 @@ export function TopBar({
   supported,
   onExport,
 }: TopBarProps) {
+  const { theme, toggle } = useTheme()
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-edge bg-surface px-3">
       <div className="flex items-center gap-2.5">
@@ -42,6 +49,31 @@ export function TopBar({
           H.264 encode unavailable — try Chrome
         </Badge>
       )}
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggle}
+            aria-label={
+              theme === 'dark'
+                ? 'Switch to light theme'
+                : 'Switch to dark theme'
+            }
+            className="h-7 w-7 shrink-0"
+          >
+            {theme === 'dark' ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {theme === 'dark' ? 'Light theme' : 'Dark theme'}
+        </TooltipContent>
+      </Tooltip>
 
       <Button variant="ghost" size="sm" asChild className="shrink-0">
         <a href="mailto:info@ninevastudios.com">

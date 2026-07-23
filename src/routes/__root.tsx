@@ -46,8 +46,22 @@ export const Route = createRootRoute({
         { rel: 'stylesheet', href: appCss },
         ...links,
       ],
-      // GA4 (gtag.js) loader + inline init, then the schema.org JSON-LD graph.
+      // `scripts` are server-rendered into <head> (before <body>). The theme
+      // script goes FIRST so it sets the .dark class on <html> before first
+      // paint — no flash. Then GA4 (gtag.js) loader + inline init, then the
+      // schema.org JSON-LD graph.
       scripts: [
+        {
+          // Anti-FOUC: reads the user's saved choice, else the OS preference.
+          children:
+            '(function(){try{' +
+            "var s=localStorage.getItem('cb-theme');" +
+            "var d=s?s==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;" +
+            'var r=document.documentElement;' +
+            "r.classList.toggle('dark',d);" +
+            "r.style.colorScheme=d?'dark':'light';" +
+            '}catch(e){}})();',
+        },
         {
           src: 'https://www.googletagmanager.com/gtag/js?id=G-9L6SRQ5WQV',
           async: true,
@@ -68,7 +82,7 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>

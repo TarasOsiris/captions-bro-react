@@ -1,12 +1,14 @@
 import { Toaster as Sonner } from 'sonner'
 import type { ToasterProps } from 'sonner'
+import { useTheme } from '@/hooks/useTheme'
 
-/** App toaster, themed to the editor's dark surfaces and offset above the
+/** App toaster, themed to the editor's surfaces and offset above the
  *  288px (h-72) timeline so toasts never sit under it. */
 function Toaster(props: ToasterProps) {
+  const { theme } = useTheme()
   return (
     <Sonner
-      theme="dark"
+      theme={theme}
       position="bottom-right"
       offset={{ bottom: '19rem', right: '1rem' }}
       toastOptions={{

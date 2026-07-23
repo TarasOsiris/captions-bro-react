@@ -1,42 +1,90 @@
 @import 'tailwindcss';
 
-@theme {
-  --color-bg: #0b0d10;
-  --color-surface: #14181d;
-  --color-raised: #1b2129;
-  --color-edge: #262c33;
-  --color-ink: #e8ebee;
-  --color-muted: #8b94a0;
-  /* iOS app accent (AccentColor asset, dark mode #A889FF). */
-  --color-accent: #a889ff;
-  --color-accent-deep: #7c3aed;
-  /* iOS timeline selection chrome (light-mode amber #FFD203). */
-  --color-select: #ffd203;
-  --color-stage: #060709;
-  --font-sans:
-    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+/* Class-based dark mode. `.dark` on <html> flips the raw token values below;
+   this variant lets the rare rule that can't be a token flip use `dark:`. */
+@custom-variant dark (&:where(.dark, .dark *));
 
-  /* shadcn/ui semantic aliases → the bespoke tokens above, so library
-     components (bg-primary, border-border, ring-ring…) inherit this theme.
+/* Raw, theme-dependent token values. LIGHT is the :root default; `.dark`
+   overrides only what changes. Tokens declared ONLY here (never in .dark) are
+   fixed in both themes — the media stage stays dark like a video editor. */
+:root {
+  color-scheme: light;
+
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --raised: #eaecf0;
+  --edge: #dfe2e8;
+  --ink: #1a1d21;
+  --muted: #5c636e;
+  /* iOS app accent — darkened on light so white text + `text-accent` read. */
+  --accent: #7c3aed;
+  --accent-deep: #6d28d9;
+  --destructive: #dc2626;
+
+  /* Fixed in both themes (intentionally absent from .dark). */
+  --stage: #060709; /* media/preview viewport stays dark, always */
+  --select: #ffd203; /* iOS timeline selection amber, lives on dark chrome */
+  --primary-fg: #ffffff; /* white on --accent */
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #0b0d10;
+  --surface: #14181d;
+  --raised: #1b2129;
+  --edge: #262c33;
+  --ink: #e8ebee;
+  --muted: #8b94a0;
+  /* iOS app accent (AccentColor asset, dark mode #A889FF). */
+  --accent: #a889ff;
+  --accent-deep: #7c3aed;
+  --destructive: #ff7a7a;
+}
+
+/* Map raw vars → Tailwind color tokens. `inline` substitutes the var()
+   expression into every generated utility (bg-bg, bg-accent/15, the shadcn
+   aliases…), so redefining a raw var under `.dark` flips them all through the
+   cascade with zero per-utility work. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-edge: var(--edge);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-select: var(--select);
+  --color-stage: var(--stage);
+
+  /* shadcn/ui semantic aliases → the raw vars, so library components
+     (bg-primary, border-border, ring-ring…) inherit this theme.
      Deliberately NOT aliased: `accent` (already the brand purple) and `muted`
      (already gray text = shadcn's muted-foreground) — components write ghost
      hovers / muted surfaces against raised/surface directly. */
-  --color-background: var(--color-bg);
-  --color-foreground: var(--color-ink);
-  --color-card: var(--color-surface);
-  --color-card-foreground: var(--color-ink);
-  --color-popover: var(--color-raised);
-  --color-popover-foreground: var(--color-ink);
-  --color-primary: var(--color-accent);
-  --color-primary-foreground: #ffffff;
-  --color-secondary: var(--color-raised);
-  --color-secondary-foreground: var(--color-ink);
-  --color-muted-foreground: var(--color-muted);
-  --color-border: var(--color-edge);
-  --color-input: var(--color-edge);
-  --color-ring: var(--color-accent);
-  --color-destructive: #ff7a7a;
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--primary-fg);
+  --color-secondary: var(--raised);
+  --color-secondary-foreground: var(--ink);
+  --color-muted-foreground: var(--muted);
+  --color-border: var(--edge);
+  --color-input: var(--edge);
+  --color-ring: var(--accent);
+  --color-destructive: var(--destructive);
   --color-destructive-foreground: #ffffff;
+}
+
+/* Static, theme-independent design tokens. */
+@theme {
+  --font-sans:
+    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --radius: 0.625rem;
 }
 
@@ -52,12 +100,13 @@ body {
 body {
   margin: 0;
   overflow: hidden;
-  color: var(--color-ink);
-  background-color: var(--color-bg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* @theme inline tokens aren't exposed as --color-* props for hand-written
+     CSS, so use @apply (which tracks the theme) rather than var(--color-*). */
+  @apply bg-bg text-ink;
 }
 
 ::selection {
-  background: rgb(168 137 255 / 0.35);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
