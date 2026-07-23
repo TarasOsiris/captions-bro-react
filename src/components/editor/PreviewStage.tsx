@@ -5,7 +5,16 @@ import { useEditorStore } from '@/store/editorStore'
 import { resolveScene } from '@/lib/model/scene'
 import { assetOf, clipAspect, clipById } from '@/lib/model/selectors'
 import { drawScene } from '@/lib/render/compositor'
-import { applyMove, applyRotation, applyScale, mediaRect } from '@/lib/transform'
+import {
+  applyCrop,
+  applyMove,
+  applyRotation,
+  applyScale,
+  cropInsets,
+  croppedRect,
+  mediaRect,
+} from '@/lib/transform'
+import type { CropInsets } from '@/lib/transform'
 import type { DrawItem, RenderSource } from '@/lib/render/compositor'
 import type { MediaPool } from '@/lib/render/mediaPool'
 import type { Clip, MediaAsset, Transform } from '@/lib/model/types'
@@ -19,22 +28,37 @@ interface PreviewStageProps {
   onPickFile: () => void
 }
 
-/** Handle positions as fractions of the media box (4 corners + 4 edge midpoints). */
-const HANDLES: Array<{ x: number; y: number; cursor: string }> = [
+/**
+ * Handle positions as fractions of the media box. The 4 corners scale (uniform
+ * zoom); the 4 edge midpoints TRIM that edge (crop, not scale) — `edge` names the
+ * inset each one drives.
+ */
+const HANDLES: Array<{
+  x: number
+  y: number
+  cursor: string
+  edge?: keyof CropInsets
+}> = [
   { x: 0, y: 0, cursor: 'nwse-resize' },
-  { x: 0.5, y: 0, cursor: 'ns-resize' },
+  { x: 0.5, y: 0, cursor: 'ns-resize', edge: 'top' },
   { x: 1, y: 0, cursor: 'nesw-resize' },
-  { x: 1, y: 0.5, cursor: 'ew-resize' },
+  { x: 1, y: 0.5, cursor: 'ew-resize', edge: 'right' },
   { x: 1, y: 1, cursor: 'nwse-resize' },
-  { x: 0.5, y: 1, cursor: 'ns-resize' },
+  { x: 0.5, y: 1, cursor: 'ns-resize', edge: 'bottom' },
   { x: 0, y: 1, cursor: 'nesw-resize' },
-  { x: 0, y: 0.5, cursor: 'ew-resize' },
+  { x: 0, y: 0.5, cursor: 'ew-resize', edge: 'left' },
 ]
 
 /** In-flight pointer gesture; `clipId` names the clip being transformed and
  *  `start` is its transform at gesture start (so moves never drift). */
 type Gesture =
-  | { kind: 'move'; clipId: string; startX: number; startY: number; start: Transform }
+  | {
+      kind: 'move'
+      clipId: string
+      startX: number
+      startY: number
+      start: Transform
+    }
   | {
       kind: 'scale'
       clipId: string
@@ -49,6 +73,19 @@ type Gesture =
       centerX: number
       centerY: number
       startAngle: number
+      start: Transform
+    }
+  | {
+      kind: 'crop'
+      clipId: string
+      edge: keyof CropInsets
+      startX: number
+      startY: number
+      /** Full media rect dimensions (px) at gesture start, to scale the drag. */
+      mediaW: number
+      mediaH: number
+      /** Media rotation (rad) — the drag is projected onto its local axes. */
+      rotationRad: number
       start: Transform
     }
 
@@ -145,7 +182,8 @@ export function PreviewStage({
     const render = () => {
       const { project: proj, currentTime } = useEditorStore.getState()
       if (canvas.width !== proj.canvas.width) canvas.width = proj.canvas.width
-      if (canvas.height !== proj.canvas.height) canvas.height = proj.canvas.height
+      if (canvas.height !== proj.canvas.height)
+        canvas.height = proj.canvas.height
       const items: DrawItem[] = resolveScene(proj, currentTime).map((item) => ({
         transform: item.clip.transform,
         source: sourceFor(item.clip),
@@ -179,7 +217,10 @@ export function PreviewStage({
   }
 
   // Video metadata → learn asset dimensions/duration; set clip duration once.
-  const onVideoMeta = (clip: Clip, e: React.SyntheticEvent<HTMLVideoElement>) => {
+  const onVideoMeta = (
+    clip: Clip,
+    e: React.SyntheticEvent<HTMLVideoElement>,
+  ) => {
     if (clip.assetId == null) return
     const v = e.currentTarget
     const st = useEditorStore.getState()
@@ -190,13 +231,17 @@ export function PreviewStage({
       patch.naturalWidth = v.videoWidth
       patch.naturalHeight = v.videoHeight
     }
-    const learnDuration = asset.durationSec == null && Number.isFinite(v.duration)
+    const learnDuration =
+      asset.durationSec == null && Number.isFinite(v.duration)
     if (Number.isFinite(v.duration)) patch.durationSec = v.duration
     st.updateAsset(asset.id, patch)
     if (learnDuration) st.updateClip(clip.id, { duration: v.duration })
   }
 
-  const onImageMeta = (assetId: string, e: React.SyntheticEvent<HTMLImageElement>) => {
+  const onImageMeta = (
+    assetId: string,
+    e: React.SyntheticEvent<HTMLImageElement>,
+  ) => {
     const img = e.currentTarget
     if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return
     useEditorStore.getState().updateAsset(assetId, {
@@ -205,10 +250,18 @@ export function PreviewStage({
     })
   }
 
-  // Selection-chrome geometry for the selected clip (paused only).
+  // Selection-chrome geometry for the selected clip (paused only) — the VISIBLE
+  // (cropped) box, so the handles sit on the trimmed edges.
   const rect =
     selectedClip && selectedAspect != null && frameSize.w > 0
-      ? mediaRect(selectedClip.transform, selectedAspect, frameSize.w, frameSize.h)
+      ? croppedRect(
+          mediaRect(
+            selectedClip.transform,
+            selectedAspect,
+            frameSize.w,
+            frameSize.h,
+          ),
+        )
       : null
 
   const centerClient = (transform: Transform, aspect: number) => {
@@ -228,7 +281,8 @@ export function PreviewStage({
     const el = frameRef.current
     if (!el) return false
     const fr = el.getBoundingClientRect()
-    const r = mediaRect(transform, aspect, fr.width, fr.height)
+    // Hit-test the visible (cropped) box, so trimmed-away regions aren't grabbable.
+    const r = croppedRect(mediaRect(transform, aspect, fr.width, fr.height))
     const dx = clientX - fr.left - r.cx
     const dy = clientY - fr.top - r.cy
     const rad = (-r.rotationDeg * Math.PI) / 180
@@ -237,7 +291,19 @@ export function PreviewStage({
     return Math.abs(rx) <= r.w / 2 && Math.abs(ry) <= r.h / 2
   }
 
-  const beginScale = (e: React.PointerEvent) => {
+  // A captured pointer is treated as being over the capture target (the frame),
+  // so its own cursor wins during a gesture — pin it here, clear it on end, and
+  // the resize/grab cursor no longer flickers to the arrow over the canvas.
+  const startGesture = (
+    el: HTMLDivElement,
+    e: React.PointerEvent,
+    cursor: string,
+  ) => {
+    el.style.cursor = cursor
+    el.setPointerCapture(e.pointerId)
+  }
+
+  const beginScale = (e: React.PointerEvent, cursor: string) => {
     e.stopPropagation()
     const el = frameRef.current
     if (!el || !selectedClip || selectedAspect == null) return
@@ -252,7 +318,38 @@ export function PreviewStage({
       startDist: Math.hypot(e.clientX - center.x, e.clientY - center.y),
       start: selectedClip.transform,
     }
-    el.setPointerCapture(e.pointerId)
+    startGesture(el, e, cursor)
+  }
+
+  const beginCrop = (
+    e: React.PointerEvent,
+    edge: keyof CropInsets,
+    cursor: string,
+  ) => {
+    e.stopPropagation()
+    const el = frameRef.current
+    if (!el || !selectedClip || selectedAspect == null) return
+    const fr = el.getBoundingClientRect()
+    const r = mediaRect(
+      selectedClip.transform,
+      selectedAspect,
+      fr.width,
+      fr.height,
+    )
+    if (r.w <= 0 || r.h <= 0) return
+    onEditStart()
+    gestureRef.current = {
+      kind: 'crop',
+      clipId: selectedClip.id,
+      edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      mediaW: r.w,
+      mediaH: r.h,
+      rotationRad: (r.rotationDeg * Math.PI) / 180,
+      start: selectedClip.transform,
+    }
+    startGesture(el, e, cursor)
   }
 
   const beginRotate = (e: React.PointerEvent) => {
@@ -270,7 +367,7 @@ export function PreviewStage({
       startAngle: Math.atan2(e.clientY - center.y, e.clientX - center.x),
       start: selectedClip.transform,
     }
-    el.setPointerCapture(e.pointerId)
+    startGesture(el, e, 'grabbing')
   }
 
   const onFramePointerDown = (e: React.PointerEvent) => {
@@ -295,7 +392,7 @@ export function PreviewStage({
           startY: e.clientY,
           start: clip.transform,
         }
-        el.setPointerCapture(e.pointerId)
+        startGesture(el, e, 'grabbing')
         return
       }
     }
@@ -321,17 +418,38 @@ export function PreviewStage({
         const dist = Math.hypot(e.clientX - g.centerX, e.clientY - g.centerY)
         setClipTransform(g.clipId, applyScale(g.start, dist / g.startDist))
       }
+    } else if (g.kind === 'crop') {
+      // Project the pointer drag onto the media's own (rotated) axes, then turn
+      // the on-edge component into an inset fraction of the full media dimension.
+      const dx = e.clientX - g.startX
+      const dy = e.clientY - g.startY
+      const cos = Math.cos(g.rotationRad)
+      const sin = Math.sin(g.rotationRad)
+      const lx = dx * cos + dy * sin
+      const ly = -dx * sin + dy * cos
+      const c = cropInsets(g.start)
+      let value: number
+      if (g.edge === 'left') value = c.left + lx / g.mediaW
+      else if (g.edge === 'right') value = c.right - lx / g.mediaW
+      else if (g.edge === 'top') value = c.top + ly / g.mediaH
+      else value = c.bottom - ly / g.mediaH
+      setClipTransform(g.clipId, applyCrop(g.start, g.edge, value))
     } else {
       const angle = Math.atan2(e.clientY - g.centerY, e.clientX - g.centerX)
       const deltaDeg = ((angle - g.startAngle) * 180) / Math.PI
-      setClipTransform(g.clipId, applyRotation(g.start, g.start.rotationDeg + deltaDeg))
+      setClipTransform(
+        g.clipId,
+        applyRotation(g.start, g.start.rotationDeg + deltaDeg),
+      )
     }
   }
 
   const endGesture = (e: React.PointerEvent) => {
     gestureRef.current = null
     const el = frameRef.current
-    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+    if (!el) return
+    el.style.cursor = '' // hand the cursor back to the handles/canvas
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   }
 
   const showChrome = selectedClip != null && !playing
@@ -432,18 +550,31 @@ export function PreviewStage({
             }}
           >
             <div className="absolute inset-0 border-2 border-select" />
-            {HANDLES.map((h) => (
-              <span
-                key={`${h.x.toString()}-${h.y.toString()}`}
-                onPointerDown={beginScale}
-                style={{
-                  left: `${(h.x * 100).toString()}%`,
-                  top: `${(h.y * 100).toString()}%`,
-                  cursor: h.cursor,
-                }}
-                className="pointer-events-auto absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-black/10 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)]"
-              />
-            ))}
+            {HANDLES.map((h) => {
+              // Corners scale → round dot; trim edges → a small bar along the edge.
+              const shape = !h.edge
+                ? 'h-3.5 w-3.5 rounded-full'
+                : h.edge === 'top' || h.edge === 'bottom'
+                  ? 'h-1.5 w-3 rounded-[2px]'
+                  : 'h-3 w-1.5 rounded-[2px]'
+              return (
+                <span
+                  key={`${h.x.toString()}-${h.y.toString()}`}
+                  onPointerDown={
+                    h.edge
+                      ? (e) =>
+                          beginCrop(e, h.edge as keyof CropInsets, h.cursor)
+                      : (e) => beginScale(e, h.cursor)
+                  }
+                  style={{
+                    left: `${(h.x * 100).toString()}%`,
+                    top: `${(h.y * 100).toString()}%`,
+                    cursor: h.cursor,
+                  }}
+                  className={`pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 border border-black/10 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)] ${shape}`}
+                />
+              )
+            })}
             <button
               type="button"
               onPointerDown={beginRotate}

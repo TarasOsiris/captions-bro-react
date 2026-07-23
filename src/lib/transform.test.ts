@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   IDENTITY,
+  applyCrop,
   applyMove,
   applyRotation,
   applyScale,
+  croppedRect,
   mediaRect,
 } from './transform'
 
@@ -66,5 +68,41 @@ describe('transform pointer helpers', () => {
     const t = applyMove(applyMove(IDENTITY, 0.1, 0.1), 0.2, -0.3)
     expect(t.tx).toBeCloseTo(0.3)
     expect(t.ty).toBeCloseTo(-0.2)
+  })
+})
+
+describe('crop — edge handles trim, not scale', () => {
+  it('applyCrop sets the named inset without touching scale', () => {
+    const t = applyCrop(IDENTITY, 'left', 0.25)
+    expect(t.crop?.left).toBeCloseTo(0.25)
+    expect(t.scale).toBe(1) // trimming never resizes the media
+  })
+
+  it('applyCrop clamps to [0, 1 - opposite - min-visible] and never negative', () => {
+    expect(applyCrop(IDENTITY, 'top', -0.5).crop?.top).toBe(0)
+    // Opposite edge already at 0.5 → the other side can trim at most ~0.45.
+    const half = applyCrop(IDENTITY, 'right', 0.5)
+    expect(applyCrop(half, 'left', 0.9).crop?.left).toBeLessThanOrEqual(
+      0.45 + 1e-9,
+    )
+  })
+
+  it('croppedRect shrinks the box and shifts its center toward the kept side', () => {
+    const r = mediaRect(applyCrop(IDENTITY, 'left', 0.25), 16 / 9, 1920, 1080)
+    const v = croppedRect(r)
+    // Trimming 25% off the left keeps 75% of the width...
+    expect(v.w).toBeCloseTo(1920 * 0.75)
+    expect(v.h).toBeCloseTo(1080)
+    // ...and the visible center moves right by half the trimmed amount.
+    expect(v.cx).toBeCloseTo(960 + (1920 * 0.25) / 2)
+    expect(v.cy).toBeCloseTo(540)
+  })
+
+  it('an uncropped rect is unchanged by croppedRect', () => {
+    const r = mediaRect(IDENTITY, 16 / 9, 1920, 1080)
+    const v = croppedRect(r)
+    expect(v.cx).toBeCloseTo(r.cx)
+    expect(v.w).toBeCloseTo(r.w)
+    expect(v.h).toBeCloseTo(r.h)
   })
 })

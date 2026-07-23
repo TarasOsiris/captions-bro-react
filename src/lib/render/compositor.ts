@@ -50,6 +50,19 @@ export function drawScene(
     ctx.save()
     ctx.translate(rect.cx, rect.cy)
     if (rect.rotationDeg) ctx.rotate((rect.rotationDeg * Math.PI) / 180)
+    // Crop = clip to the kept sub-rect, then paint the media at full size. So a
+    // trim reveals less of the source (content stays put) instead of scaling it.
+    const c = rect.crop
+    if (c.top || c.right || c.bottom || c.left) {
+      ctx.beginPath()
+      ctx.rect(
+        -rect.w / 2 + c.left * rect.w,
+        -rect.h / 2 + c.top * rect.h,
+        rect.w * (1 - c.left - c.right),
+        rect.h * (1 - c.top - c.bottom),
+      )
+      ctx.clip()
+    }
     item.source.paint(ctx, -rect.w / 2, -rect.h / 2, rect.w, rect.h)
     ctx.restore()
   }
