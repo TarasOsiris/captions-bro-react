@@ -35,6 +35,8 @@ export interface DocumentSlice {
   /** Move a clip to `index` within its own track (index is against the array
    *  excluding the clip), then re-pack the track. */
   moveClipToIndex: (id: string, index: number) => void
+  /** Set a clip's source in-point + on-timeline length (edge trim), then re-pack. */
+  trimClip: (id: string, trimIn: number, duration: number) => void
   updateClip: (id: string, patch: Partial<Clip>) => void
   setClipTransform: (id: string, transform: Transform) => void
   removeClip: (id: string) => void
@@ -90,6 +92,19 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
         track.clips.splice(clamp(index, 0, track.clips.length), 0, clip)
         repackTrack(track)
         return
+      }
+    }),
+
+  trimClip: (id, trimIn, duration) =>
+    set((s) => {
+      for (const track of s.project.tracks) {
+        const clip = track.clips.find((c) => c.id === id)
+        if (clip) {
+          clip.trimIn = trimIn
+          clip.duration = duration
+          repackTrack(track)
+          return
+        }
       }
     }),
 

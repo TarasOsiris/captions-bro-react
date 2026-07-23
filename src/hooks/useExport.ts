@@ -1,12 +1,15 @@
-// Export lifecycle: capability probe, start/cancel, progress → store, download +
-// toasts. The live ExportHandle and the result object-URL are owned here (refs),
-// not the store.
+// Export lifecycle: capability probe, start/cancel, progress → store. The finished
+// file is surfaced by the full-screen ExportScreen (which reads downloadUrl from the
+// store); this hook owns the live ExportHandle and the result object-URL (refs).
 
 import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { useEditorStore } from '@/store/editorStore'
-import { ExportCancelledError, canExportH264, exportProject } from '@/lib/export'
-import { formatBytes } from '@/lib/media'
+import {
+  ExportCancelledError,
+  canExportH264,
+  exportProject,
+} from '@/lib/export'
 import { projectDuration } from '@/lib/model/selectors'
 import type { ExportHandle } from '@/lib/export'
 
@@ -75,29 +78,16 @@ export function useExport() {
         if (handleRef.current !== handle) return
         const url = URL.createObjectURL(result.blob)
         downloadUrlRef.current = url
+        // The finished video is silent if audio existed but couldn't be encoded.
+        const silent =
+          result.silent === true ||
+          result.discardedTracks.some((t) => t.type === 'audio')
         useEditorStore
           .getState()
-          .completeExport(url, result.suggestedFileName)
+          .completeExport(url, result.suggestedFileName, silent)
+        // Safety net: save the render immediately so a long export is never lost
+        // if the user dismisses the screen without pressing Download.
         triggerDownload(url, result.suggestedFileName)
-        toast.success('Export complete — download started', {
-          description: `${result.suggestedFileName} · ${formatBytes(result.blob.size)}`,
-          action: {
-            label: 'Download again',
-            onClick: () => {
-              triggerDownload(url, result.suggestedFileName)
-            },
-          },
-          duration: 8000,
-        })
-        if (result.silent) {
-          toast.warning(
-            "Audio couldn't be encoded in this browser, so the export is silent — try Chrome or Safari.",
-          )
-        } else if (result.discardedTracks.length) {
-          toast.warning(
-            "Audio was dropped — this browser can't encode its codec, so the exported video is silent.",
-          )
-        }
       },
       (err: unknown) => {
         if (handleRef.current !== handle) return
@@ -111,9 +101,21 @@ export function useExport() {
   const cancelExport = useCallback(() => {
     const handle = handleRef.current
     if (!handle) return
+    // Detach first, so a same-tick resolve is dropped by the `!== handle` guard
+    // and can't flip the just-cancelled export back to 'done'.
+    handleRef.current = null
     handle.cancel().catch(() => {})
     useEditorStore.getState().resetExport()
   }, [])
 
-  return { startExport, cancelExport }
+  // Dismiss the finished-export screen: release the file URL and go back to idle.
+  const closeExport = useCallback(() => {
+    if (downloadUrlRef.current) {
+      URL.revokeObjectURL(downloadUrlRef.current)
+      downloadUrlRef.current = null
+    }
+    useEditorStore.getState().resetExport()
+  }, [])
+
+  return { startExport, cancelExport, closeExport }
 }

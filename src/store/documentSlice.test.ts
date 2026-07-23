@@ -95,3 +95,28 @@ describe('moveClipToIndex', () => {
     expectPacked(trackClips())
   })
 })
+
+describe('trimClip', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3), clip('c', 4)]))
+  })
+
+  it('shortens a clip and ripples the clips after it', () => {
+    useEditorStore.getState().trimClip('b', 0, 2) // right-trim b: 3 → 2
+    const clips = trackClips()
+    expect(clips.map((c) => c.duration)).toEqual([5, 2, 4])
+    expect(clips.map((c) => c.start)).toEqual([0, 5, 7]) // c rippled left
+    expectPacked(clips)
+  })
+
+  it('applies a head trim (trimIn up, duration down) and re-packs', () => {
+    useEditorStore.getState().trimClip('a', 2, 3) // head-trim a by 2s
+    const clips = trackClips()
+    expect(clips[0].trimIn).toBe(2)
+    expect(clips.map((c) => c.duration)).toEqual([3, 3, 4])
+    expect(clips.map((c) => c.start)).toEqual([0, 3, 6])
+    expectPacked(clips)
+  })
+})

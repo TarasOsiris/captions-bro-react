@@ -1,5 +1,6 @@
 // Pure lookups over the document tree. Keep SSR-safe and testable.
 
+import { clamp } from '@/lib/math'
 import type { Clip, MediaAsset, Project, Track } from './types'
 
 /** Every clip across all tracks, in track order. */
@@ -59,6 +60,31 @@ export function insertionIndex(
     if (clip.start + clip.duration / 2 <= time) index++
   }
   return index
+}
+
+/** Resolve an edge-trim drag into a clip's new `{ trimIn, duration }`. `deltaSec` is
+ *  the signed distance the dragged edge moved. Clamped so the clip stays
+ *  ≥ `minDuration`, `trimIn` ≥ 0, and (for a bounded source) the out-point stays
+ *  within `sourceLen` (pass Infinity for stills / unknown length). */
+export function resolveTrim(
+  edge: 'left' | 'right',
+  clip: { trimIn: number; duration: number },
+  deltaSec: number,
+  sourceLen: number,
+  minDuration: number,
+): { trimIn: number; duration: number } {
+  if (edge === 'right') {
+    // Never below the current length — so a clip whose stored duration already
+    // exceeds the source (rare) can't snap shorter on an outward drag.
+    const maxDuration = Math.max(clip.duration, sourceLen - clip.trimIn)
+    return {
+      trimIn: clip.trimIn,
+      duration: clamp(clip.duration + deltaSec, minDuration, maxDuration),
+    }
+  }
+  // Head trim: h>0 removes from the start (trimIn↑, duration↓); h<0 restores it.
+  const h = clamp(deltaSec, -clip.trimIn, clip.duration - minDuration)
+  return { trimIn: clip.trimIn + h, duration: clip.duration - h }
 }
 
 /** Total timeline duration = the furthest clip end across all tracks. */

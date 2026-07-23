@@ -7,6 +7,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
-}
+// Re-exported so existing `import { clamp } from '@/lib/utils'` call sites keep
+// working; the definition lives in the dependency-free `math` module.
+export { clamp } from './math'

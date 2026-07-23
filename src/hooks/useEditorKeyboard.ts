@@ -10,12 +10,16 @@ export function useEditorKeyboard({
   togglePlay,
   seek,
   saveUndo,
+  enabled = true,
 }: {
   togglePlay: () => void
   seek: (t: number) => void
   saveUndo: () => void
+  /** When false, shortcuts are inert (e.g. the export overlay is covering the editor). */
+  enabled?: boolean
 }) {
   useEffect(() => {
+    if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       const target = e.target
       if (
@@ -61,5 +65,5 @@ export function useEditorKeyboard({
     return () => {
       window.removeEventListener('keydown', onKey)
     }
-  }, [togglePlay, seek, saveUndo])
+  }, [togglePlay, seek, saveUndo, enabled])
 }

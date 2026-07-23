@@ -9,6 +9,8 @@ import { useMediaImport } from '@/hooks/useMediaImport'
 import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
 import { useUndoRedo } from '@/hooks/useUndoRedo'
+import { ExportScreen } from '@/components/editor/ExportScreen'
+import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { MediaPanel } from '@/components/editor/MediaPanel'
 import { PreviewStage } from '@/components/editor/PreviewStage'
 import { Timeline } from '@/components/editor/Timeline'
@@ -22,26 +24,32 @@ function Editor() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const poolRef = useRef(createMediaPool())
 
-  // Orchestration lives in hooks; the store is the single source of truth.
-  const { saveUndo } = useUndoRedo()
-  const { togglePlay, seek } = usePlayback(poolRef)
-  const { importFile } = useMediaImport()
-  const { startExport, cancelExport } = useExport()
-  useEditorKeyboard({ togglePlay, seek, saveUndo })
-  usePersistence()
-
   const project = useEditorStore((s) => s.project)
   const supported = useEditorStore((s) => s.supported)
   const exportPhase = useEditorStore((s) => s.exportPhase)
-  const exportProgress = useEditorStore((s) => s.exportProgress)
 
   const hasClips = projectDuration(project) > 0
   const exporting = exportPhase === 'exporting'
 
+  // Orchestration lives in hooks; the store is the single source of truth.
+  const { saveUndo } = useUndoRedo()
+  const { togglePlay, seek } = usePlayback(poolRef)
+  const { importFile } = useMediaImport()
+  const { startExport, cancelExport, closeExport } = useExport()
+  useEditorKeyboard({
+    togglePlay,
+    seek,
+    saveUndo,
+    enabled: exportPhase === 'idle',
+  })
+  usePersistence()
+
   // Release all source URLs at unmount.
   useEffect(
     () => () => {
-      for (const asset of Object.values(useEditorStore.getState().project.assets)) {
+      for (const asset of Object.values(
+        useEditorStore.getState().project.assets,
+      )) {
         URL.revokeObjectURL(asset.url)
       }
     },
@@ -73,9 +81,7 @@ function Editor() {
         projectName={hasClips ? project.name : null}
         canExport={hasClips && !exporting}
         supported={supported}
-        exporting={exporting ? { progress: exportProgress } : null}
         onExport={startExport}
-        onCancelExport={cancelExport}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -87,9 +93,14 @@ function Editor() {
           onDropFile={handleImport}
           onPickFile={pickFile}
         />
+        <InspectorPanel />
       </div>
 
-      <Timeline onTogglePlay={togglePlay} onSeek={seek} onEditStart={saveUndo} />
+      <Timeline
+        onTogglePlay={togglePlay}
+        onSeek={seek}
+        onEditStart={saveUndo}
+      />
 
       <input
         ref={fileInputRef}
@@ -98,6 +109,10 @@ function Editor() {
         className="hidden"
         onChange={onFileInputChange}
       />
+
+      {exportPhase !== 'idle' && (
+        <ExportScreen onCancel={cancelExport} onClose={closeExport} />
+      )}
     </div>
   )
 }

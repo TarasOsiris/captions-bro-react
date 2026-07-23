@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { insertionIndex } from './selectors'
+import { insertionIndex, resolveTrim } from './selectors'
 import { IDENTITY } from '@/lib/transform'
 import type { Clip } from './types'
 
@@ -39,5 +39,61 @@ describe('insertionIndex', () => {
 
   it('treats a midpoint hit as inclusive', () => {
     expect(insertionIndex(clips, 2.5)).toBe(1)
+  })
+})
+
+describe('resolveTrim', () => {
+  const MIN = 0.1
+
+  it('extends the right edge, bounded by the source end', () => {
+    // trimIn 2, dur 5 → out-point at source 7; source is 10 → max dur 8.
+    expect(
+      resolveTrim('right', { trimIn: 2, duration: 5 }, 3, 10, MIN),
+    ).toEqual({
+      trimIn: 2,
+      duration: 8,
+    })
+    expect(
+      resolveTrim('right', { trimIn: 2, duration: 5 }, 5, 10, MIN).duration,
+    ).toBe(8) // clamped to source end, not 10
+  })
+
+  it('shrinks the right edge no smaller than the minimum', () => {
+    expect(
+      resolveTrim('right', { trimIn: 0, duration: 5 }, -10, Infinity, MIN)
+        .duration,
+    ).toBeCloseTo(MIN)
+  })
+
+  it('trims the head: trimIn up, duration down', () => {
+    expect(resolveTrim('left', { trimIn: 1, duration: 5 }, 2, 10, MIN)).toEqual(
+      {
+        trimIn: 3,
+        duration: 3,
+      },
+    )
+  })
+
+  it('restores the head no further than trimIn 0', () => {
+    expect(
+      resolveTrim('left', { trimIn: 1, duration: 5 }, -3, 10, MIN),
+    ).toEqual({
+      trimIn: 0,
+      duration: 6,
+    })
+  })
+
+  it('is unbounded on the right for a still (Infinity source)', () => {
+    expect(
+      resolveTrim('right', { trimIn: 0, duration: 5 }, 100, Infinity, MIN)
+        .duration,
+    ).toBe(105)
+  })
+
+  it('never snaps an over-long clip shorter on an outward drag', () => {
+    // duration (8) already exceeds source (5); dragging outward must not shrink it.
+    expect(
+      resolveTrim('right', { trimIn: 0, duration: 8 }, 2, 5, MIN).duration,
+    ).toBe(8)
   })
 })

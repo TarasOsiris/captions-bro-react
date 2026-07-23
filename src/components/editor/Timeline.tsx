@@ -20,6 +20,7 @@ import {
   clipById,
   insertionIndex,
   projectDuration,
+  resolveTrim,
 } from '@/lib/model/selectors'
 import { clipFromAsset } from '@/lib/model/factories'
 import { formatTimecode } from '@/lib/media'
@@ -41,6 +42,8 @@ const MIN_LABEL_PX = 56
 const RULER_FALLBACK_SEC = 30
 /** Pointer travel (px) before a clip press becomes a drag rather than a click. */
 const DRAG_THRESHOLD = 4
+/** Shortest a clip can be trimmed to (s), so a trimmed clip stays grabbable. */
+const MIN_CLIP_DURATION = 0.1
 
 /** X (px) of the boundary before `index` on a packed track — where an inserted/
  *  moved clip's left edge will land. Mirrors the clip-left math in ClipBox. */
@@ -68,6 +71,9 @@ function ClipBox({
   onPointerDownClip,
   onPointerMoveClip,
   onPointerUpClip,
+  onTrimDown,
+  onTrimMove,
+  onTrimUp,
 }: {
   clip: Clip
   track: Track
@@ -78,11 +84,21 @@ function ClipBox({
   onPointerDownClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
   onPointerMoveClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
   onPointerUpClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  onTrimDown: (
+    clip: Clip,
+    edge: 'left' | 'right',
+    e: React.PointerEvent,
+  ) => void
+  onTrimMove: (clip: Clip, e: React.PointerEvent) => void
+  onTrimUp: (clip: Clip, e: React.PointerEvent) => void
 }) {
   const asset = useEditorStore((s) => assetOf(s.project, clip))
   const width = clip.duration * TIMELINE_PX_PER_SEC
   const left = TRACK_PAD + clip.start * TIMELINE_PX_PER_SEC
   const thumbs = asset?.thumbs ?? []
+  // Filmstrip frames are sampled across the whole asset; map each tile to the
+  // clip's trimmed source window [trimIn, trimIn+duration] so trims scrub visibly.
+  const assetDur = asset?.durationSec ?? 0
   const tileCount = Math.max(1, Math.ceil(width / TIMELINE_TILE_W))
   const label = asset?.name ?? (clip.type === 'text' ? clip.text : clip.type)
 
@@ -115,11 +131,14 @@ function ClipBox({
         {track.type === 'video' && thumbs.length > 0 ? (
           <div className="absolute inset-0">
             {Array.from({ length: tileCount }, (_, i) => {
+              const f = (i + 0.5) / tileCount
+              const assetFrac =
+                assetDur > 0 ? (clip.trimIn + f * clip.duration) / assetDur : f
               const src =
                 thumbs[
                   Math.min(
                     thumbs.length - 1,
-                    Math.floor(((i + 0.5) / tileCount) * thumbs.length),
+                    Math.max(0, Math.floor(assetFrac * thumbs.length)),
                   )
                 ]
               return (
@@ -144,9 +163,35 @@ function ClipBox({
       </div>
 
       {selected && (
-        <div className="pointer-events-none absolute -inset-y-[3px] inset-x-0 z-20">
-          <div className="absolute inset-0 rounded-[4px] border-[3px] border-select" />
-        </div>
+        <>
+          <div className="pointer-events-none absolute -inset-y-[3px] inset-x-0 z-20">
+            <div className="absolute inset-0 rounded-[4px] border-[3px] border-select" />
+          </div>
+          {(['left', 'right'] as const).map((edge) => (
+            <span
+              key={edge}
+              onPointerDown={(e) => {
+                onTrimDown(clip, edge, e)
+              }}
+              onPointerMove={(e) => {
+                onTrimMove(clip, e)
+              }}
+              onPointerUp={(e) => {
+                onTrimUp(clip, e)
+              }}
+              onPointerCancel={(e) => {
+                onTrimUp(clip, e)
+              }}
+              className={`absolute inset-y-0 z-30 flex w-3 cursor-ew-resize touch-none items-center justify-center bg-select ${
+                edge === 'left'
+                  ? 'left-0 rounded-l-[9px]'
+                  : 'right-0 rounded-r-[9px]'
+              }`}
+            >
+              <span className="h-4 w-0.5 rounded-full bg-black/45" />
+            </span>
+          ))}
+        </>
       )}
     </div>
   )
@@ -163,6 +208,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const removeClip = useEditorStore((s) => s.removeClip)
   const addClipAtIndex = useEditorStore((s) => s.addClipAtIndex)
   const moveClipToIndex = useEditorStore((s) => s.moveClipToIndex)
+  const trimClip = useEditorStore((s) => s.trimClip)
   const resetExport = useEditorStore((s) => s.resetExport)
 
   const scrubRef = useRef<HTMLDivElement>(null)
@@ -180,6 +226,17 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const [clipDrag, setClipDrag] = useState<{
     clipId: string
     offsetX: number
+  } | null>(null)
+  // Edge-trim gesture bookkeeping (imperative); geometry updates live via trimClip.
+  const trimDragRef = useRef<{
+    pointerId: number
+    clipId: string
+    edge: 'left' | 'right'
+    startClientX: number
+    origStart: number
+    origTrimIn: number
+    origDuration: number
+    snapshotted: boolean
   } | null>(null)
   // X (px) of the magnetic insertion caret, shared by panel-drop and reposition.
   const [dropIndicatorX, setDropIndicatorX] = useState<number | null>(null)
@@ -292,6 +349,61 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
       )
       moveClipToIndex(clip.id, index)
     }
+  }
+
+  // --- Trim a clip by dragging its left/right edge handle (gapless ripple) ---
+  const onTrimPointerDown = (
+    clip: Clip,
+    edge: 'left' | 'right',
+    e: React.PointerEvent,
+  ) => {
+    // Keep the press off the clip-move / scrub handlers below it.
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    trimDragRef.current = {
+      pointerId: e.pointerId,
+      clipId: clip.id,
+      edge,
+      startClientX: e.clientX,
+      origStart: clip.start,
+      origTrimIn: clip.trimIn,
+      origDuration: clip.duration,
+      snapshotted: false,
+    }
+  }
+
+  const onTrimPointerMove = (clip: Clip, e: React.PointerEvent) => {
+    const d = trimDragRef.current
+    if (!d || d.clipId !== clip.id) return
+    const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
+    if (!d.snapshotted) {
+      if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
+      d.snapshotted = true
+      onEditStart() // one undo snapshot for the whole gesture
+    }
+    // A still image has no source timeline; video is bounded by its intrinsic length.
+    const asset = assetOf(useEditorStore.getState().project, clip)
+    const sourceLen =
+      clip.type === 'video'
+        ? (asset?.durationSec ?? Number.POSITIVE_INFINITY)
+        : Number.POSITIVE_INFINITY
+    const { trimIn, duration } = resolveTrim(
+      d.edge,
+      { trimIn: d.origTrimIn, duration: d.origDuration },
+      deltaSec,
+      sourceLen,
+      MIN_CLIP_DURATION,
+    )
+    trimClip(clip.id, trimIn, duration)
+  }
+
+  const onTrimPointerUp = (clip: Clip, e: React.PointerEvent) => {
+    const d = trimDragRef.current
+    if (!d || d.clipId !== clip.id) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    trimDragRef.current = null
   }
 
   // --- Drop a media item from the panel onto the timeline (HTML5 DnD) ---
@@ -539,6 +651,9 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                     onPointerDownClip={onClipPointerDown}
                     onPointerMoveClip={onClipPointerMove}
                     onPointerUpClip={onClipPointerUp}
+                    onTrimDown={onTrimPointerDown}
+                    onTrimMove={onTrimPointerMove}
+                    onTrimUp={onTrimPointerUp}
                   />
                 ))}
               </div>
