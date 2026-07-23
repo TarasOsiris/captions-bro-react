@@ -44,6 +44,23 @@ export function clipAspect(project: Project, clip: Clip | null): number | null {
   return asset.naturalWidth / asset.naturalHeight
 }
 
+/** Insertion slot for a clip dropped/moved to `time`: the number of clips
+ *  (optionally excluding `excludeId`) whose midpoint sits at or before `time`.
+ *  On a packed track this is the array index to splice at. Drives the magnetic
+ *  drop indicator and the reposition target. */
+export function insertionIndex(
+  clips: Clip[],
+  time: number,
+  excludeId?: string,
+): number {
+  let index = 0
+  for (const clip of clips) {
+    if (clip.id === excludeId) continue
+    if (clip.start + clip.duration / 2 <= time) index++
+  }
+  return index
+}
+
 /** Total timeline duration = the furthest clip end across all tracks. */
 export function projectDuration(project: Project): number {
   let end = 0

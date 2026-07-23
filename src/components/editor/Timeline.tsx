@@ -15,9 +15,16 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useEditorStore } from '@/store/editorStore'
-import { assetOf, clipById, projectDuration } from '@/lib/model/selectors'
+import {
+  assetOf,
+  clipById,
+  insertionIndex,
+  projectDuration,
+} from '@/lib/model/selectors'
+import { clipFromAsset } from '@/lib/model/factories'
 import { formatTimecode } from '@/lib/media'
 import { clamp } from '@/lib/utils'
+import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 import { TIMELINE_PX_PER_SEC, TIMELINE_TILE_W } from '@/lib/thumbs'
 import type { Clip, Track } from '@/lib/model/types'
 
@@ -32,6 +39,16 @@ interface TimelineProps {
 const TRACK_PAD = 24
 const MIN_LABEL_PX = 56
 const RULER_FALLBACK_SEC = 30
+/** Pointer travel (px) before a clip press becomes a drag rather than a click. */
+const DRAG_THRESHOLD = 4
+
+/** X (px) of the boundary before `index` on a packed track — where an inserted/
+ *  moved clip's left edge will land. Mirrors the clip-left math in ClipBox. */
+function boundaryX(clips: Clip[], index: number): number {
+  let t = 0
+  for (let i = 0; i < index && i < clips.length; i++) t += clips[i].duration
+  return TRACK_PAD + t * TIMELINE_PX_PER_SEC
+}
 
 /** Major-tick spacing (s) — smallest that keeps labels ≥MIN_LABEL_PX apart. */
 function tickStep(): number {
@@ -46,12 +63,21 @@ function ClipBox({
   clip,
   track,
   selected,
-  onSelect,
+  dragging,
+  dragOffsetX,
+  onPointerDownClip,
+  onPointerMoveClip,
+  onPointerUpClip,
 }: {
   clip: Clip
   track: Track
   selected: boolean
-  onSelect: (e: React.PointerEvent) => void
+  /** True while this clip is the one being repositioned (lifts + offsets it). */
+  dragging: boolean
+  dragOffsetX: number
+  onPointerDownClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  onPointerMoveClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  onPointerUpClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
 }) {
   const asset = useEditorStore((s) => assetOf(s.project, clip))
   const width = clip.duration * TIMELINE_PX_PER_SEC
@@ -63,15 +89,28 @@ function ClipBox({
   return (
     <div
       onPointerDown={(e) => {
-        // Don't let a clip press reach the scrub handler (which seeks + deselects).
-        e.stopPropagation()
-        onSelect(e)
+        onPointerDownClip(clip, track, e)
       }}
-      style={{ left: `${left.toFixed(2)}px`, width: `${width.toFixed(2)}px` }}
-      className="absolute inset-y-0 cursor-pointer"
+      onPointerMove={(e) => {
+        onPointerMoveClip(clip, track, e)
+      }}
+      onPointerUp={(e) => {
+        onPointerUpClip(clip, track, e)
+      }}
+      onPointerCancel={(e) => {
+        onPointerUpClip(clip, track, e)
+      }}
+      style={{
+        left: `${left.toFixed(2)}px`,
+        width: `${width.toFixed(2)}px`,
+        transform: dragging
+          ? `translateX(${dragOffsetX.toFixed(2)}px)`
+          : undefined,
+      }}
+      className={`absolute inset-y-0 ${dragging ? 'z-30 cursor-grabbing' : 'cursor-grab'}`}
     >
       <div
-        className={`absolute inset-0 overflow-hidden bg-black ${selected ? 'rounded-none ring-0' : 'rounded-[9px]'}`}
+        className={`absolute inset-0 overflow-hidden bg-black ${selected ? 'rounded-none ring-0' : 'rounded-[9px]'} ${dragging ? 'shadow-[0_8px_24px_rgba(0,0,0,0.55)]' : ''}`}
       >
         {track.type === 'video' && thumbs.length > 0 ? (
           <div className="absolute inset-0">
@@ -122,11 +161,28 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const splitClip = useEditorStore((s) => s.splitClip)
   const duplicateClip = useEditorStore((s) => s.duplicateClip)
   const removeClip = useEditorStore((s) => s.removeClip)
+  const addClipAtIndex = useEditorStore((s) => s.addClipAtIndex)
+  const moveClipToIndex = useEditorStore((s) => s.moveClipToIndex)
+  const resetExport = useEditorStore((s) => s.resetExport)
 
   const scrubRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const [viewportWidth, setViewportWidth] = useState(0)
+
+  // Reposition-gesture bookkeeping (imperative) + render state for the lifted clip.
+  const clipDragRef = useRef<{
+    pointerId: number
+    clipId: string
+    startClientX: number
+    moved: boolean
+  } | null>(null)
+  const [clipDrag, setClipDrag] = useState<{
+    clipId: string
+    offsetX: number
+  } | null>(null)
+  // X (px) of the magnetic insertion caret, shared by panel-drop and reposition.
+  const [dropIndicatorX, setDropIndicatorX] = useState<number | null>(null)
 
   useEffect(() => {
     const el = viewportRef.current
@@ -146,7 +202,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const contentWidth = rulerDuration * TIMELINE_PX_PER_SEC
   const rulerWidth = Math.max(contentWidth, viewportWidth - TRACK_PAD * 2)
   const trackWidth = TRACK_PAD * 2 + rulerWidth
-  const playheadX = TRACK_PAD + clamp(currentTime, 0, rulerDuration) * TIMELINE_PX_PER_SEC
+  const playheadX =
+    TRACK_PAD + clamp(currentTime, 0, rulerDuration) * TIMELINE_PX_PER_SEC
 
   const selectedClip = clipById(project, selectedClipId)
   const canSplit =
@@ -168,6 +225,109 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     if (currentTime < clip.start || currentTime > clip.start + clip.duration) {
       onSeek(clip.start)
     }
+  }
+
+  /** clientX → timeline seconds (clamped ≥0), accounting for scroll + inset. */
+  const clientXToTime = (clientX: number) => {
+    const el = scrubRef.current
+    if (!el) return 0
+    const rect = el.getBoundingClientRect()
+    return Math.max(0, (clientX - rect.left - TRACK_PAD) / TIMELINE_PX_PER_SEC)
+  }
+
+  // The drop target for panel media (single video track today; packed model per-track).
+  const videoTrack =
+    project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
+
+  // --- Reposition a clip already on the timeline (pointer-capture gesture) ---
+  const onClipPointerDown = (
+    clip: Clip,
+    _track: Track,
+    e: React.PointerEvent,
+  ) => {
+    // Don't let the press reach the scrub handler (which seeks + deselects).
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    clipDragRef.current = {
+      pointerId: e.pointerId,
+      clipId: clip.id,
+      startClientX: e.clientX,
+      moved: false,
+    }
+    selectClipAt(clip)
+  }
+
+  const onClipPointerMove = (
+    clip: Clip,
+    track: Track,
+    e: React.PointerEvent,
+  ) => {
+    const d = clipDragRef.current
+    if (!d || d.clipId !== clip.id) return
+    const dx = e.clientX - d.startClientX
+    if (!d.moved) {
+      if (Math.abs(dx) < DRAG_THRESHOLD) return
+      d.moved = true
+      onEditStart() // one undo snapshot for the whole gesture
+    }
+    const others = track.clips.filter((c) => c.id !== clip.id)
+    const index = insertionIndex(track.clips, clientXToTime(e.clientX), clip.id)
+    setDropIndicatorX(boundaryX(others, index))
+    setClipDrag({ clipId: clip.id, offsetX: dx })
+  }
+
+  const onClipPointerUp = (clip: Clip, track: Track, e: React.PointerEvent) => {
+    const d = clipDragRef.current
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    clipDragRef.current = null
+    setClipDrag(null)
+    setDropIndicatorX(null)
+    if (d?.moved) {
+      const index = insertionIndex(
+        track.clips,
+        clientXToTime(e.clientX),
+        clip.id,
+      )
+      moveClipToIndex(clip.id, index)
+    }
+  }
+
+  // --- Drop a media item from the panel onto the timeline (HTML5 DnD) ---
+  const isMediaDrag = (e: React.DragEvent) =>
+    e.dataTransfer.types.includes(MEDIA_ASSET_MIME)
+
+  const onTimelineDragOver = (e: React.DragEvent) => {
+    if (!isMediaDrag(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    const index = insertionIndex(videoTrack.clips, clientXToTime(e.clientX))
+    setDropIndicatorX(boundaryX(videoTrack.clips, index))
+  }
+
+  const onTimelineDragLeave = (e: React.DragEvent) => {
+    // Ignore leaves onto descendants (e.g. moving across a clip) to avoid flicker.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+    setDropIndicatorX(null)
+  }
+
+  const onTimelineDrop = (e: React.DragEvent) => {
+    setDropIndicatorX(null)
+    const assetId = e.dataTransfer.getData(MEDIA_ASSET_MIME)
+    if (!assetId) return
+    e.preventDefault()
+    const st = useEditorStore.getState()
+    if (!Object.hasOwn(st.project.assets, assetId)) return
+    const asset = st.project.assets[assetId]
+    const track =
+      st.project.tracks.find((t) => t.type === 'video') ?? st.project.tracks[0]
+    const index = insertionIndex(track.clips, clientXToTime(e.clientX))
+    const clip = clipFromAsset(asset)
+    onEditStart()
+    addClipAtIndex(clip, track.id, index)
+    selectClip(clip.id)
+    resetExport()
   }
 
   const doSplit = () => {
@@ -328,6 +488,12 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           onPointerCancel={() => {
             draggingRef.current = false
           }}
+          onDragEnter={(e) => {
+            if (isMediaDrag(e)) e.preventDefault()
+          }}
+          onDragOver={onTimelineDragOver}
+          onDragLeave={onTimelineDragLeave}
+          onDrop={onTimelineDrop}
           style={{ width: `${trackWidth.toString()}px` }}
           className="relative h-full cursor-pointer select-none"
         >
@@ -366,9 +532,13 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                     clip={clip}
                     track={track}
                     selected={clip.id === selectedClipId}
-                    onSelect={() => {
-                      selectClipAt(clip)
-                    }}
+                    dragging={clipDrag?.clipId === clip.id}
+                    dragOffsetX={
+                      clipDrag?.clipId === clip.id ? clipDrag.offsetX : 0
+                    }
+                    onPointerDownClip={onClipPointerDown}
+                    onPointerMoveClip={onClipPointerMove}
+                    onPointerUpClip={onClipPointerUp}
                   />
                 ))}
               </div>
@@ -388,6 +558,13 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
             <div className="absolute inset-y-0 left-1/2 top-1 w-[3px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.6)]" />
             <div className="absolute left-1/2 top-0 h-3.5 w-[9px] -translate-x-1/2 rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
           </div>
+
+          {dropIndicatorX != null && (
+            <div
+              className="pointer-events-none absolute bottom-2 top-7 z-20 w-[3px] -translate-x-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
+              style={{ left: `${dropIndicatorX.toFixed(2)}px` }}
+            />
+          )}
         </div>
       </div>
     </footer>

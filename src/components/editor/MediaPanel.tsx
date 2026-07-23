@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Captions, Film, Music, Plus, Type } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,6 +10,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { assetOf } from '@/lib/model/selectors'
 import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
+import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 
 interface MediaPanelProps {
   disabled: boolean
@@ -61,6 +63,7 @@ export function MediaPanel({ disabled, onPickFile }: MediaPanelProps) {
   const project = useEditorStore((s) => s.project)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const selectClip = useEditorStore((s) => s.selectClip)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
 
   const clips = project.tracks.flatMap((t) => t.clips)
 
@@ -99,17 +102,33 @@ export function MediaPanel({ disabled, onPickFile }: MediaPanelProps) {
           {clips.length > 0 ? (
             clips.map((clip) => {
               const asset = assetOf(project, clip)
-              const thumb = asset && asset.thumbs.length > 0 ? asset.thumbs[0] : null
+              const thumb =
+                asset && asset.thumbs.length > 0 ? asset.thumbs[0] : null
+              const canDrag = clip.assetId != null
               return (
                 <button
                   key={clip.id}
                   type="button"
+                  draggable={canDrag}
+                  onDragStart={(e) => {
+                    if (clip.assetId == null) return
+                    // Payload is the asset id — drop creates a new clip from it.
+                    e.dataTransfer.setData(MEDIA_ASSET_MIME, clip.assetId)
+                    e.dataTransfer.setData('text/plain', asset?.name ?? '')
+                    e.dataTransfer.effectAllowed = 'copy'
+                    setDraggingId(clip.id)
+                  }}
+                  onDragEnd={() => {
+                    setDraggingId(null)
+                  }}
                   onClick={() => {
                     selectClip(clip.id)
                   }}
                   className={cn(
                     'block w-full text-left',
+                    canDrag && 'cursor-grab active:cursor-grabbing',
                     clip.id === selectedClipId ? 'opacity-100' : 'opacity-90',
+                    draggingId === clip.id && 'opacity-40',
                   )}
                 >
                   <div
