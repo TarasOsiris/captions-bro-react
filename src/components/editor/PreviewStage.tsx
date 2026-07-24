@@ -153,6 +153,7 @@ export function PreviewStage({
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    ctx.imageSmoothingQuality = 'high'
 
     const sourceFor = (clip: Clip): RenderSource | null => {
       if (clip.type === 'video') {
@@ -181,14 +182,26 @@ export function PreviewStage({
     let raf = 0
     const render = () => {
       const { project: proj, currentTime } = useEditorStore.getState()
-      if (canvas.width !== proj.canvas.width) canvas.width = proj.canvas.width
-      if (canvas.height !== proj.canvas.height)
-        canvas.height = proj.canvas.height
+      // Size the backing store to the DISPLAYED pixels (× DPR), not the export
+      // resolution — so the preview is crisp at native density on any screen
+      // instead of being up/down-scaled from a fixed 1920×1080. Geometry is
+      // resolution-independent (mediaRect works off fractions), so the image is
+      // identical; only the pixel density differs from the export path.
+      const dpr = window.devicePixelRatio || 1
+      const cw = Math.max(1, Math.round(canvas.clientWidth * dpr))
+      const ch = Math.max(1, Math.round(canvas.clientHeight * dpr))
+      if (canvas.width !== cw) canvas.width = cw
+      if (canvas.height !== ch) canvas.height = ch
+      const renderCanvas = {
+        width: cw,
+        height: ch,
+        background: proj.canvas.background,
+      }
       const items: DrawItem[] = resolveScene(proj, currentTime).map((item) => ({
         transform: item.clip.transform,
         source: sourceFor(item.clip),
       }))
-      drawScene(ctx, proj.canvas, items)
+      drawScene(ctx, renderCanvas, items)
       raf = requestAnimationFrame(render)
     }
     raf = requestAnimationFrame(render)
@@ -465,7 +478,7 @@ export function PreviewStage({
       onPointerDown={() => {
         selectClip(null)
       }}
-      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-5"
+      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-5 [container-type:size]"
     >
       <div
         ref={frameRef}
@@ -473,9 +486,14 @@ export function PreviewStage({
         onPointerMove={onFramePointerMove}
         onPointerUp={endGesture}
         onPointerCancel={endGesture}
-        className="relative aspect-video h-full max-h-full w-auto max-w-full touch-none"
+        // Always the largest 16:9 box that fits the stage (contain), sized from
+        // the container's own dimensions so BOTH axes stay locked to 16:9. A
+        // single-axis fit (h-full + max-w-full) lets max-width clamp the width
+        // while height stays full, silently squishing the frame — and with it
+        // everything drawn onto the canvas. Never regress this to a one-axis fit.
+        className="relative h-[min(100cqh,56.25cqw)] w-[min(100cqw,177.778cqh)] touch-none"
       >
-        <div className="absolute inset-0 overflow-hidden rounded-[3px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_40px_120px_-30px_rgba(0,0,0,0.9)]">
+        <div className="absolute inset-0 overflow-hidden rounded-[3px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,1),0_40px_120px_-30px_rgba(0,0,0,0.9)]">
           {/* Hidden decode/audio sources (behind the opaque canvas). Videos stay
               full-size + opacity-0 so browsers keep decoding their frames. */}
           {videoClips.map((clip) => {

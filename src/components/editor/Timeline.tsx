@@ -165,7 +165,9 @@ function ClipBox({
       {selected && (
         <>
           <div className="pointer-events-none absolute -inset-y-[3px] inset-x-0 z-20">
-            <div className="absolute inset-0 rounded-[4px] border-[3px] border-select" />
+            {/* Square corners so the square-inner-edged trim bars meet it flush —
+                the bars' rounded OUTER corners give the selection its capsule ends. */}
+            <div className="absolute inset-0 border-[3px] border-select" />
           </div>
           {(['left', 'right'] as const).map((edge) => (
             <span
@@ -182,10 +184,13 @@ function ClipBox({
               onPointerCancel={(e) => {
                 onTrimUp(clip, e)
               }}
-              className={`absolute inset-y-0 z-30 flex w-3 cursor-ew-resize touch-none items-center justify-center bg-select ${
+              // Sit just OUTSIDE the clip: the left bar flush against the clip's
+              // left edge (extending leftward), the right bar against its right
+              // edge — flanking the selection, never covering the thumbnail.
+              className={`absolute -inset-y-[3px] z-30 flex w-3 cursor-ew-resize touch-none items-center justify-center bg-select ${
                 edge === 'left'
-                  ? 'left-0 rounded-l-[9px]'
-                  : 'right-0 rounded-r-[9px]'
+                  ? 'right-full rounded-l-[4px]'
+                  : 'left-full rounded-r-[4px]'
               }`}
             >
               <span className="h-4 w-0.5 rounded-full bg-black/45" />

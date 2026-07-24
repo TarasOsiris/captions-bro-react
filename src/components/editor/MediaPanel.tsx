@@ -98,76 +98,78 @@ export function MediaPanel({ disabled, onPickFile }: MediaPanelProps) {
           </Tooltip>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 pt-1">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 pt-1">
           {clips.length > 0 ? (
-            clips.map((clip) => {
-              const asset = assetOf(project, clip)
-              const thumb =
-                asset && asset.thumbs.length > 0 ? asset.thumbs[0] : null
-              const canDrag = clip.assetId != null
-              return (
-                <button
-                  key={clip.id}
-                  type="button"
-                  draggable={canDrag}
-                  onDragStart={(e) => {
-                    if (clip.assetId == null) return
-                    // Payload is the asset id — drop creates a new clip from it.
-                    e.dataTransfer.setData(MEDIA_ASSET_MIME, clip.assetId)
-                    e.dataTransfer.setData('text/plain', asset?.name ?? '')
-                    e.dataTransfer.effectAllowed = 'copy'
-                    setDraggingId(clip.id)
-                  }}
-                  onDragEnd={() => {
-                    setDraggingId(null)
-                  }}
-                  onClick={() => {
-                    selectClip(clip.id)
-                  }}
-                  className={cn(
-                    'block w-full text-left',
-                    canDrag && 'cursor-grab active:cursor-grabbing',
-                    clip.id === selectedClipId ? 'opacity-100' : 'opacity-90',
-                    draggingId === clip.id && 'opacity-40',
-                  )}
-                >
-                  <div
+            <div className="grid grid-cols-3 gap-2">
+              {clips.map((clip) => {
+                const asset = assetOf(project, clip)
+                const thumb =
+                  asset && asset.thumbs.length > 0 ? asset.thumbs[0] : null
+                const canDrag = clip.assetId != null
+                return (
+                  <button
+                    key={clip.id}
+                    type="button"
+                    draggable={canDrag}
+                    onDragStart={(e) => {
+                      if (clip.assetId == null) return
+                      // Payload is the asset id — drop creates a new clip from it.
+                      e.dataTransfer.setData(MEDIA_ASSET_MIME, clip.assetId)
+                      e.dataTransfer.setData('text/plain', asset?.name ?? '')
+                      e.dataTransfer.effectAllowed = 'copy'
+                      setDraggingId(clip.id)
+                    }}
+                    onDragEnd={() => {
+                      setDraggingId(null)
+                    }}
+                    onClick={() => {
+                      selectClip(clip.id)
+                    }}
                     className={cn(
-                      'relative aspect-video overflow-hidden rounded-md border bg-black',
-                      clip.id === selectedClipId
-                        ? 'border-select ring-1 ring-select/70'
-                        : 'border-edge ring-1 ring-transparent',
+                      'block w-full text-left',
+                      canDrag && 'cursor-grab active:cursor-grabbing',
+                      clip.id === selectedClipId ? 'opacity-100' : 'opacity-90',
+                      draggingId === clip.id && 'opacity-40',
                     )}
                   >
-                    {thumb ? (
-                      <img
-                        src={thumb}
-                        alt=""
-                        draggable={false}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-muted/60">
-                        <Film className="h-6 w-6" />
-                      </div>
-                    )}
-                    <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[10px] tabular-nums text-white/90">
-                      {formatDuration(clip.duration)}
-                    </span>
-                  </div>
-                  <div className="mt-1.5">
-                    <p className="truncate text-xs text-ink">
-                      {asset?.name ?? clip.type}
-                    </p>
-                    {asset && (
-                      <p className="font-mono text-[10px] text-muted">
-                        {formatBytes(asset.sizeBytes)}
+                    <div
+                      className={cn(
+                        'relative aspect-video overflow-hidden rounded-md border bg-black',
+                        clip.id === selectedClipId
+                          ? 'border-select ring-1 ring-select/70'
+                          : 'border-edge ring-1 ring-transparent',
+                      )}
+                    >
+                      {thumb ? (
+                        <img
+                          src={thumb}
+                          alt=""
+                          draggable={false}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-muted/60">
+                          <Film className="h-6 w-6" />
+                        </div>
+                      )}
+                      <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 font-mono text-[10px] tabular-nums text-white/90">
+                        {formatDuration(clip.duration)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5">
+                      <p className="truncate text-xs text-ink">
+                        {asset?.name ?? clip.type}
                       </p>
-                    )}
-                  </div>
-                </button>
-              )
-            })
+                      {asset && (
+                        <p className="font-mono text-[10px] text-muted">
+                          {formatBytes(asset.sizeBytes)}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
           ) : (
             <Button
               variant="outline"

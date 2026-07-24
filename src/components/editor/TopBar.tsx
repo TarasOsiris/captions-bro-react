@@ -1,4 +1,4 @@
-import { Mail, Moon, Sun, Upload } from 'lucide-react'
+import { Mail, Moon, Redo2, Sun, Undo2, Upload } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -13,6 +13,10 @@ interface TopBarProps {
   canExport: boolean
   supported: boolean | null
   onExport: () => void
+  onUndo: () => void
+  onRedo: () => void
+  canUndo: boolean
+  canRedo: boolean
 }
 
 export function TopBar({
@@ -20,6 +24,10 @@ export function TopBar({
   canExport,
   supported,
   onExport,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
 }: TopBarProps) {
   const { theme, toggle } = useTheme()
   return (
@@ -81,6 +89,40 @@ export function TopBar({
           Contact
         </a>
       </Button>
+
+      <div className="h-4 w-px shrink-0 bg-edge" />
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onUndo}
+            disabled={!canUndo}
+            aria-label="Undo"
+            className="h-7 w-7 shrink-0"
+          >
+            <Undo2 className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Undo (⌘Z)</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onRedo}
+            disabled={!canRedo}
+            aria-label="Redo"
+            className="h-7 w-7 shrink-0"
+          >
+            <Redo2 className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
+      </Tooltip>
 
       <Button
         onClick={onExport}

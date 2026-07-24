@@ -32,7 +32,7 @@ function Editor() {
   const exporting = exportPhase === 'exporting'
 
   // Orchestration lives in hooks; the store is the single source of truth.
-  const { saveUndo } = useUndoRedo()
+  const { saveUndo, undo, redo, canUndo, canRedo } = useUndoRedo()
   const { togglePlay, seek } = usePlayback(poolRef)
   const { importFile } = useMediaImport()
   const { startExport, cancelExport, closeExport } = useExport()
@@ -82,6 +82,10 @@ function Editor() {
         canExport={hasClips && !exporting}
         supported={supported}
         onExport={startExport}
+        onUndo={undo}
+        onRedo={redo}
+        canUndo={canUndo}
+        canRedo={canRedo}
       />
 
       <div className="flex min-h-0 flex-1">

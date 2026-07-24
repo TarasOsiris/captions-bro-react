@@ -30,11 +30,11 @@
 .dark {
   color-scheme: dark;
 
-  --bg: #0b0d10;
-  --surface: #14181d;
-  --raised: #1b2129;
-  --edge: #262c33;
-  --ink: #e8ebee;
+  --bg: #15181d;
+  --surface: #1d222a;
+  --raised: #262d36;
+  --edge: #333b45;
+  --ink: #dce0e6;
   --muted: #8b94a0;
   /* iOS app accent (AccentColor asset, dark mode #A889FF). */
   --accent: #a889ff;
