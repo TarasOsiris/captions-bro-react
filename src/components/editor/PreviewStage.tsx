@@ -3,7 +3,8 @@ import { RotateCw, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useEditorStore } from '@/store/editorStore'
 import { resolveScene } from '@/lib/model/scene'
-import { assetOf, clipAspect, clipById } from '@/lib/model/selectors'
+import { allClips, assetOf, clipAspect, clipById } from '@/lib/model/selectors'
+import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { drawScene } from '@/lib/render/compositor'
 import {
   applyCrop,
@@ -39,45 +40,50 @@ const HANDLES: Array<{
   cursor: string
   edge?: keyof CropInsets
 }> = [
-  { x: 0, y: 0, cursor: 'nwse-resize' },
+  // Edges FIRST, corners last: their expanded hit areas overlap once the media
+  // box is narrow, and paint order decides the winner. Scale (corners) is the
+  // more commonly wanted gesture, so it must be on top.
   { x: 0.5, y: 0, cursor: 'ns-resize', edge: 'top' },
-  { x: 1, y: 0, cursor: 'nesw-resize' },
   { x: 1, y: 0.5, cursor: 'ew-resize', edge: 'right' },
-  { x: 1, y: 1, cursor: 'nwse-resize' },
   { x: 0.5, y: 1, cursor: 'ns-resize', edge: 'bottom' },
-  { x: 0, y: 1, cursor: 'nesw-resize' },
   { x: 0, y: 0.5, cursor: 'ew-resize', edge: 'left' },
+  { x: 0, y: 0, cursor: 'nwse-resize' },
+  { x: 1, y: 0, cursor: 'nesw-resize' },
+  { x: 1, y: 1, cursor: 'nwse-resize' },
+  { x: 0, y: 1, cursor: 'nesw-resize' },
 ]
 
-/** In-flight pointer gesture; `clipId` names the clip being transformed and
- *  `start` is its transform at gesture start (so moves never drift). */
+/** Fields every gesture carries. `pointerId` makes the gesture exclusive to the
+ *  pointer that started it, so a second finger can neither drive nor end it. */
+interface GestureBase {
+  pointerId: number
+  /** The clip being transformed. */
+  clipId: string
+  /** Its transform at gesture start, so repeated moves never drift. */
+  start: Transform
+}
+
+/** In-flight pointer gesture. */
 type Gesture =
-  | {
+  | (GestureBase & {
       kind: 'move'
-      clipId: string
       startX: number
       startY: number
-      start: Transform
-    }
-  | {
+    })
+  | (GestureBase & {
       kind: 'scale'
-      clipId: string
       centerX: number
       centerY: number
       startDist: number
-      start: Transform
-    }
-  | {
+    })
+  | (GestureBase & {
       kind: 'rotate'
-      clipId: string
       centerX: number
       centerY: number
       startAngle: number
-      start: Transform
-    }
-  | {
+    })
+  | (GestureBase & {
       kind: 'crop'
-      clipId: string
       edge: keyof CropInsets
       startX: number
       startY: number
@@ -86,8 +92,7 @@ type Gesture =
       mediaH: number
       /** Media rotation (rad) — the drag is projected onto its local axes. */
       rotationRad: number
-      start: Transform
-    }
+    })
 
 export function PreviewStage({
   poolRef,
@@ -116,13 +121,13 @@ export function PreviewStage({
 
   // Distinct sources to keep mounted: a <video> per video clip, a shared <img>
   // per referenced image asset.
-  const videoClips = project.tracks
-    .flatMap((t) => t.clips)
-    .filter((c) => c.type === 'video' && c.assetId != null)
+  const videoClips = allClips(project).filter(
+    (c) => c.type === 'video' && c.assetId != null,
+  )
   const imageAssets = (() => {
     const seen = new Set<string>()
     const out: { id: string; url: string }[] = []
-    for (const clip of project.tracks.flatMap((t) => t.clips)) {
+    for (const clip of allClips(project)) {
       if (clip.type !== 'image' || clip.assetId == null) continue
       if (seen.has(clip.assetId)) continue
       const asset = assetOf(project, clip)
@@ -316,8 +321,15 @@ export function PreviewStage({
     el.setPointerCapture(e.pointerId)
   }
 
+  /** Gestures are exclusive. A second pointer landing mid-gesture must be
+   *  ignored outright — otherwise it overwrites `gestureRef` and pushes a
+   *  second undo snapshot for what the user experiences as one edit. */
+  const canBeginGesture = (e: React.PointerEvent) =>
+    isPrimaryPointer(e) && gestureRef.current == null
+
   const beginScale = (e: React.PointerEvent, cursor: string) => {
     e.stopPropagation()
+    if (!canBeginGesture(e)) return
     const el = frameRef.current
     if (!el || !selectedClip || selectedAspect == null) return
     const center = centerClient(selectedClip.transform, selectedAspect)
@@ -325,6 +337,7 @@ export function PreviewStage({
     onEditStart()
     gestureRef.current = {
       kind: 'scale',
+      pointerId: e.pointerId,
       clipId: selectedClip.id,
       centerX: center.x,
       centerY: center.y,
@@ -340,6 +353,7 @@ export function PreviewStage({
     cursor: string,
   ) => {
     e.stopPropagation()
+    if (!canBeginGesture(e)) return
     const el = frameRef.current
     if (!el || !selectedClip || selectedAspect == null) return
     const fr = el.getBoundingClientRect()
@@ -353,6 +367,7 @@ export function PreviewStage({
     onEditStart()
     gestureRef.current = {
       kind: 'crop',
+      pointerId: e.pointerId,
       clipId: selectedClip.id,
       edge,
       startX: e.clientX,
@@ -367,6 +382,7 @@ export function PreviewStage({
 
   const beginRotate = (e: React.PointerEvent) => {
     e.stopPropagation()
+    if (!canBeginGesture(e)) return
     const el = frameRef.current
     if (!el || !selectedClip || selectedAspect == null) return
     const center = centerClient(selectedClip.transform, selectedAspect)
@@ -374,6 +390,7 @@ export function PreviewStage({
     onEditStart()
     gestureRef.current = {
       kind: 'rotate',
+      pointerId: e.pointerId,
       clipId: selectedClip.id,
       centerX: center.x,
       centerY: center.y,
@@ -386,6 +403,7 @@ export function PreviewStage({
   const onFramePointerDown = (e: React.PointerEvent) => {
     if (!hasClips) return
     e.stopPropagation()
+    if (!canBeginGesture(e)) return
     const el = frameRef.current
     if (!el) return
     // Hit-test the clips live at the playhead, topmost first.
@@ -400,6 +418,7 @@ export function PreviewStage({
         onEditStart()
         gestureRef.current = {
           kind: 'move',
+          pointerId: e.pointerId,
           clipId: clip.id,
           startX: e.clientX,
           startY: e.clientY,
@@ -415,7 +434,7 @@ export function PreviewStage({
   const onFramePointerMove = (e: React.PointerEvent) => {
     const g = gestureRef.current
     const el = frameRef.current
-    if (!g || !el) return
+    if (!g || !el || g.pointerId !== e.pointerId) return
     if (g.kind === 'move') {
       const fr = el.getBoundingClientRect()
       setClipTransform(
@@ -458,11 +477,15 @@ export function PreviewStage({
   }
 
   const endGesture = (e: React.PointerEvent) => {
+    // Only the pointer that started the gesture may end it — otherwise a second
+    // finger lifting anywhere on the frame kills an in-flight drag.
+    const g = gestureRef.current
+    if (!g || g.pointerId !== e.pointerId) return
     gestureRef.current = null
     const el = frameRef.current
     if (!el) return
     el.style.cursor = '' // hand the cursor back to the handles/canvas
-    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+    releaseCapture(el, e.pointerId)
   }
 
   const showChrome = selectedClip != null && !playing
@@ -478,7 +501,7 @@ export function PreviewStage({
       onPointerDown={() => {
         selectClip(null)
       }}
-      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-5 [container-type:size]"
+      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-2 [container-type:size] sm:p-3 lg:p-5"
     >
       <div
         ref={frameRef}
@@ -508,6 +531,9 @@ export function PreviewStage({
                 }}
                 src={asset.url}
                 playsInline
+                // Without this iOS may fetch metadata only; readyState stays < 2,
+                // sourceFor() returns null and the canvas draws nothing at all.
+                preload="auto"
                 onLoadedMetadata={(e) => {
                   onVideoMeta(clip, e)
                 }}
@@ -589,7 +615,11 @@ export function PreviewStage({
                     top: `${(h.y * 100).toString()}%`,
                     cursor: h.cursor,
                   }}
-                  className={`pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 border border-black/10 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)] ${shape}`}
+                  // The handle stays visually tiny — it marks an exact geometric
+                  // edge, so growing it would move where the user reads that
+                  // edge to be. A transparent ::after lifts the hit area to
+                  // ~38×38 (corners) / ~30×36 (crop bars) instead.
+                  className={`pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 border border-black/10 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.5)] after:absolute after:-inset-3 after:content-[''] ${shape}`}
                 />
               )
             })}
@@ -597,8 +627,19 @@ export function PreviewStage({
               type="button"
               onPointerDown={beginRotate}
               aria-label="Rotate"
-              style={{ left: '50%', top: 'calc(100% + 22px)' }}
-              className="pointer-events-auto absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center rounded-full bg-white text-black/70 shadow-[0_1px_4px_rgba(0,0,0,0.5)] active:cursor-grabbing"
+              // Normally 22px BELOW the media box, but flip inside when there
+              // isn't room — the stage is `overflow-hidden`, so otherwise the
+              // button is clipped away entirely whenever the media fills the
+              // frame height (common on a phone in landscape, and on any short
+              // desktop window).
+              style={{
+                left: '50%',
+                top:
+                  rect.cy + rect.h / 2 + 44 <= frameSize.h
+                    ? 'calc(100% + 22px)'
+                    : 'calc(100% - 22px)',
+              }}
+              className="pointer-events-auto absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center rounded-full bg-white text-black/70 shadow-[0_1px_4px_rgba(0,0,0,0.5)] after:absolute after:-inset-2 after:content-[''] active:cursor-grabbing"
             >
               <RotateCw className="h-3.5 w-3.5" />
             </button>

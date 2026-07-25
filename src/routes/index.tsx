@@ -9,9 +9,11 @@ import { useMediaImport } from '@/hooks/useMediaImport'
 import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
 import { useUndoRedo } from '@/hooks/useUndoRedo'
+import { useClipInsert } from '@/hooks/useClipInsert'
 import { ExportScreen } from '@/components/editor/ExportScreen'
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { MediaPanel } from '@/components/editor/MediaPanel'
+import { MobileDock } from '@/components/editor/MobileDock'
 import { PreviewStage } from '@/components/editor/PreviewStage'
 import { Timeline } from '@/components/editor/Timeline'
 import { TopBar } from '@/components/editor/TopBar'
@@ -26,6 +28,7 @@ function Editor() {
 
   const project = useEditorStore((s) => s.project)
   const supported = useEditorStore((s) => s.supported)
+  const unsupportedReason = useEditorStore((s) => s.unsupportedReason)
   const exportPhase = useEditorStore((s) => s.exportPhase)
 
   const hasClips = projectDuration(project) > 0
@@ -35,7 +38,8 @@ function Editor() {
   const { saveUndo, undo, redo, canUndo, canRedo } = useUndoRedo()
   const { togglePlay, seek } = usePlayback(poolRef)
   const { importFile } = useMediaImport()
-  const { startExport, cancelExport, closeExport } = useExport()
+  const { insertAssetAtTime } = useClipInsert()
+  const { startExport, cancelExport, closeExport, getResultBlob } = useExport()
   useEditorKeyboard({
     togglePlay,
     seek,
@@ -75,12 +79,23 @@ function Editor() {
     fileInputRef.current?.click()
   }, [])
 
+  // The touch counterpart to dragging a bin item onto the timeline: place a
+  // copy at the playhead. Same seam as the desktop drop path (useClipInsert).
+  const handleAddToTimeline = useCallback(
+    (assetId: string) => {
+      saveUndo()
+      insertAssetAtTime(assetId, useEditorStore.getState().currentTime)
+    },
+    [saveUndo, insertAssetAtTime],
+  )
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-bg text-ink">
       <TopBar
         projectName={hasClips ? project.name : null}
         canExport={hasClips && !exporting}
         supported={supported}
+        unsupportedReason={unsupportedReason}
         onExport={startExport}
         onUndo={undo}
         onRedo={redo}
@@ -88,8 +103,16 @@ function Editor() {
         canRedo={canRedo}
       />
 
+      {/* Must stay a row-direction `flex` with `min-h-0`. PreviewStage sets
+          `container-type: size`, which implies `contain: size` — if this row's
+          height ever became content-driven the section would collapse to zero
+          and the preview would vanish. See CLAUDE.md. */}
       <div className="flex min-h-0 flex-1">
-        <MediaPanel disabled={exporting} onPickFile={pickFile} />
+        <MediaPanel
+          onPickFile={pickFile}
+          onSeek={seek}
+          onAddToTimeline={handleAddToTimeline}
+        />
         <PreviewStage
           poolRef={poolRef}
           dropDisabled={exporting}
@@ -106,6 +129,13 @@ function Editor() {
         onEditStart={saveUndo}
       />
 
+      {/* Bottom rail + media sheet; renders nothing at lg+. */}
+      <MobileDock
+        onPickFile={pickFile}
+        onSeek={seek}
+        onAddToTimeline={handleAddToTimeline}
+      />
+
       <input
         ref={fileInputRef}
         type="file"
@@ -115,7 +145,11 @@ function Editor() {
       />
 
       {exportPhase !== 'idle' && (
-        <ExportScreen onCancel={cancelExport} onClose={closeExport} />
+        <ExportScreen
+          onCancel={cancelExport}
+          onClose={closeExport}
+          getResultBlob={getResultBlob}
+        />
       )}
     </div>
   )

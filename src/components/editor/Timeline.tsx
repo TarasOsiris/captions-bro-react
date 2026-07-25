@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Pause,
   Play,
@@ -21,9 +23,13 @@ import {
   insertionIndex,
   projectDuration,
   resolveTrim,
+  revealTime,
+  videoTrack,
 } from '@/lib/model/selectors'
-import { clipFromAsset } from '@/lib/model/factories'
+import { useClipInsert } from '@/hooks/useClipInsert'
+import { NUDGE_SEC } from '@/hooks/useEditorKeyboard'
 import { formatTimecode } from '@/lib/media'
+import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { clamp } from '@/lib/utils'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 import { TIMELINE_PX_PER_SEC, TIMELINE_TILE_W } from '@/lib/thumbs'
@@ -71,6 +77,7 @@ function ClipBox({
   onPointerDownClip,
   onPointerMoveClip,
   onPointerUpClip,
+  onPointerCancelClip,
   onTrimDown,
   onTrimMove,
   onTrimUp,
@@ -84,6 +91,8 @@ function ClipBox({
   onPointerDownClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
   onPointerMoveClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
   onPointerUpClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  /** Distinct from up: the gesture was TAKEN AWAY, so it must not commit. */
+  onPointerCancelClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
   onTrimDown: (
     clip: Clip,
     edge: 'left' | 'right',
@@ -114,7 +123,7 @@ function ClipBox({
         onPointerUpClip(clip, track, e)
       }}
       onPointerCancel={(e) => {
-        onPointerUpClip(clip, track, e)
+        onPointerCancelClip(clip, track, e)
       }}
       style={{
         left: `${left.toFixed(2)}px`,
@@ -123,7 +132,13 @@ function ClipBox({
           ? `translateX(${dragOffsetX.toFixed(2)}px)`
           : undefined,
       }}
-      className={`absolute inset-y-0 ${dragging ? 'z-30 cursor-grabbing' : 'cursor-grab'}`}
+      // Touch model: an UNSELECTED clip is scroll-transparent (`touch-pan-x`),
+      // so a finger landing anywhere can still pan a long timeline. Selecting it
+      // claims the gesture (`touch-none`) and the next drag repositions it —
+      // tap-to-select-then-drag, the same precedence the trim bars already use.
+      className={`absolute inset-y-0 select-none [-webkit-touch-callout:none] ${
+        selected ? 'touch-none' : 'touch-pan-x'
+      } ${dragging ? 'z-30 cursor-grabbing' : 'cursor-grab'}`}
     >
       <div
         className={`absolute inset-0 overflow-hidden bg-black ${selected ? 'rounded-none ring-0' : 'rounded-[9px]'} ${dragging ? 'shadow-[0_8px_24px_rgba(0,0,0,0.55)]' : ''}`}
@@ -187,10 +202,16 @@ function ClipBox({
               // Sit just OUTSIDE the clip: the left bar flush against the clip's
               // left edge (extending leftward), the right bar against its right
               // edge — flanking the selection, never covering the thumbnail.
-              className={`absolute -inset-y-[3px] z-30 flex w-3 cursor-ew-resize touch-none items-center justify-center bg-select ${
+              //
+              // The bar stays 12px WIDE (it's a visual edge marker; widening it
+              // would swallow neighbours on a gapless-packed track), but a
+              // transparent ::after grows the HIT area to ~36×70. Biased inward
+              // so only 8px encroaches on the neighbouring clip — the rest
+              // lands on this clip's own body, where trim rightly beats move.
+              className={`absolute -inset-y-[3px] z-30 flex w-3 cursor-ew-resize touch-none items-center justify-center bg-select after:absolute after:-inset-y-2 after:content-[''] ${
                 edge === 'left'
-                  ? 'right-full rounded-l-[4px]'
-                  : 'left-full rounded-r-[4px]'
+                  ? 'right-full rounded-l-[4px] after:-left-2 after:-right-4'
+                  : 'left-full rounded-r-[4px] after:-left-4 after:-right-2'
               }`}
             >
               <span className="h-4 w-0.5 rounded-full bg-black/45" />
@@ -211,14 +232,25 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const splitClip = useEditorStore((s) => s.splitClip)
   const duplicateClip = useEditorStore((s) => s.duplicateClip)
   const removeClip = useEditorStore((s) => s.removeClip)
-  const addClipAtIndex = useEditorStore((s) => s.addClipAtIndex)
   const moveClipToIndex = useEditorStore((s) => s.moveClipToIndex)
   const trimClip = useEditorStore((s) => s.trimClip)
-  const resetExport = useEditorStore((s) => s.resetExport)
+  const { insertAssetAtTime } = useClipInsert()
 
   const scrubRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const draggingRef = useRef(false)
+  // Scrub gesture bookkeeping. `live` means "seek continuously as the pointer
+  // moves" — true for mouse/pen, false for touch (where the native pan owns
+  // horizontal drags, so touch seeks on TAP instead; see the pointerup branch).
+  const scrubDragRef = useRef<{
+    pointerId: number
+    startClientX: number
+    moved: boolean
+    live: boolean
+  } | null>(null)
+  // Dragging the playhead knob itself. This is the precise-scrub path on touch
+  // (where the track surface yields horizontal drags to the native pan) and a
+  // usability win on desktop.
+  const playheadDragRef = useRef<number | null>(null)
   const [viewportWidth, setViewportWidth] = useState(0)
 
   // Reposition-gesture bookkeeping (imperative) + render state for the lifted clip.
@@ -284,9 +316,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const selectClipAt = (clip: Clip) => {
     selectClip(clip.id)
     // Bring the playhead onto the clip so the preview shows it.
-    if (currentTime < clip.start || currentTime > clip.start + clip.duration) {
-      onSeek(clip.start)
-    }
+    const reveal = revealTime(clip, currentTime)
+    if (reveal != null) onSeek(reveal)
   }
 
   /** clientX → timeline seconds (clamped ≥0), accounting for scroll + inset. */
@@ -297,9 +328,45 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     return Math.max(0, (clientX - rect.left - TRACK_PAD) / TIMELINE_PX_PER_SEC)
   }
 
-  // The drop target for panel media (single video track today; packed model per-track).
-  const videoTrack =
-    project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
+  // The drop target for panel media (packed model per-track).
+  const dropTrack = videoTrack(project)
+
+  /** True while any timeline gesture owns a pointer — gestures are exclusive,
+   *  so a second finger can't corrupt the one in flight. */
+  const gestureBusy = () =>
+    clipDragRef.current != null ||
+    trimDragRef.current != null ||
+    scrubDragRef.current != null ||
+    playheadDragRef.current != null
+
+  // --- Drag the playhead knob (works identically on mouse and touch) ---
+  const onPlayheadPointerDown = (e: React.PointerEvent) => {
+    if (!isPrimaryPointer(e) || gestureBusy()) return
+    // Keep the press off the scrub surface underneath (which would also seek).
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    playheadDragRef.current = e.pointerId
+  }
+
+  const onPlayheadPointerMove = (e: React.PointerEvent) => {
+    if (playheadDragRef.current !== e.pointerId) return
+    seekFromClientX(e.clientX)
+  }
+
+  const onPlayheadPointerUp = (e: React.PointerEvent) => {
+    if (playheadDragRef.current !== e.pointerId) return
+    releaseCapture(e.currentTarget, e.pointerId)
+    playheadDragRef.current = null
+  }
+
+  /** Tear down a clip-reposition gesture: release capture and clear both the
+   *  imperative ref and the render state. Shared by up and cancel. */
+  const releaseClipDrag = (el: Element, pointerId: number) => {
+    releaseCapture(el, pointerId)
+    clipDragRef.current = null
+    setClipDrag(null)
+    setDropIndicatorX(null)
+  }
 
   // --- Reposition a clip already on the timeline (pointer-capture gesture) ---
   const onClipPointerDown = (
@@ -307,6 +374,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     _track: Track,
     e: React.PointerEvent,
   ) => {
+    if (!isPrimaryPointer(e) || gestureBusy()) return
     // Don't let the press reach the scrub handler (which seeks + deselects).
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -325,12 +393,11 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     e: React.PointerEvent,
   ) => {
     const d = clipDragRef.current
-    if (!d || d.clipId !== clip.id) return
+    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
     const dx = e.clientX - d.startClientX
     if (!d.moved) {
       if (Math.abs(dx) < DRAG_THRESHOLD) return
       d.moved = true
-      onEditStart() // one undo snapshot for the whole gesture
     }
     const others = track.clips.filter((c) => c.id !== clip.id)
     const index = insertionIndex(track.clips, clientXToTime(e.clientX), clip.id)
@@ -340,20 +407,27 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
   const onClipPointerUp = (clip: Clip, track: Track, e: React.PointerEvent) => {
     const d = clipDragRef.current
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-    clipDragRef.current = null
-    setClipDrag(null)
-    setDropIndicatorX(null)
-    if (d?.moved) {
-      const index = insertionIndex(
-        track.clips,
-        clientXToTime(e.clientX),
-        clip.id,
-      )
-      moveClipToIndex(clip.id, index)
-    }
+    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+    releaseClipDrag(e.currentTarget, e.pointerId)
+    if (!d.moved) return
+    const index = insertionIndex(track.clips, clientXToTime(e.clientX), clip.id)
+    // Snapshot immediately before the (single) mutation, not when the drag
+    // crosses the threshold — so an abandoned drag leaves no undo entry.
+    onEditStart()
+    moveClipToIndex(clip.id, index)
+  }
+
+  /** The browser took the gesture (native pan, OS interrupt). Drop it silently:
+   *  no reorder, and — because the snapshot happens at the commit point — no
+   *  stray undo entry either. */
+  const onClipPointerCancel = (
+    clip: Clip,
+    _track: Track,
+    e: React.PointerEvent,
+  ) => {
+    const d = clipDragRef.current
+    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+    releaseClipDrag(e.currentTarget, e.pointerId)
   }
 
   // --- Trim a clip by dragging its left/right edge handle (gapless ripple) ---
@@ -362,6 +436,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     edge: 'left' | 'right',
     e: React.PointerEvent,
   ) => {
+    if (!isPrimaryPointer(e) || gestureBusy()) return
     // Keep the press off the clip-move / scrub handlers below it.
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -379,7 +454,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
   const onTrimPointerMove = (clip: Clip, e: React.PointerEvent) => {
     const d = trimDragRef.current
-    if (!d || d.clipId !== clip.id) return
+    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
     const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
     if (!d.snapshotted) {
       if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
@@ -402,12 +477,12 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     trimClip(clip.id, trimIn, duration)
   }
 
+  // Shared by up AND cancel: the trim is applied live on every move, so ending
+  // the gesture is the correct response either way — there is nothing to commit.
   const onTrimPointerUp = (clip: Clip, e: React.PointerEvent) => {
     const d = trimDragRef.current
-    if (!d || d.clipId !== clip.id) return
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
+    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+    releaseCapture(e.currentTarget, e.pointerId)
     trimDragRef.current = null
   }
 
@@ -419,8 +494,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     if (!isMediaDrag(e)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
-    const index = insertionIndex(videoTrack.clips, clientXToTime(e.clientX))
-    setDropIndicatorX(boundaryX(videoTrack.clips, index))
+    const index = insertionIndex(dropTrack.clips, clientXToTime(e.clientX))
+    setDropIndicatorX(boundaryX(dropTrack.clips, index))
   }
 
   const onTimelineDragLeave = (e: React.DragEvent) => {
@@ -434,17 +509,9 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     const assetId = e.dataTransfer.getData(MEDIA_ASSET_MIME)
     if (!assetId) return
     e.preventDefault()
-    const st = useEditorStore.getState()
-    if (!Object.hasOwn(st.project.assets, assetId)) return
-    const asset = st.project.assets[assetId]
-    const track =
-      st.project.tracks.find((t) => t.type === 'video') ?? st.project.tracks[0]
-    const index = insertionIndex(track.clips, clientXToTime(e.clientX))
-    const clip = clipFromAsset(asset)
     onEditStart()
-    addClipAtIndex(clip, track.id, index)
-    selectClip(clip.id)
-    resetExport()
+    // Same seam the touch tap-to-add path uses (see useClipInsert).
+    insertAssetAtTime(assetId, clientXToTime(e.clientX))
   }
 
   const doSplit = () => {
@@ -491,9 +558,13 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   ]
 
   return (
-    <footer className="flex h-72 shrink-0 flex-col border-t border-edge bg-surface/70">
-      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-edge/70 px-3">
-        <div className="flex items-center gap-1">
+    // `relative` anchors the mobile contextual tool pill; the height comes from
+    // --timeline-h (styles.css) so the toast offset can't drift from it.
+    <footer className="relative flex h-[var(--timeline-h)] shrink-0 flex-col border-t border-edge bg-surface/70">
+      <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-edge/70 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]">
+        {/* Below lg these move into the contextual pill at the bottom of the
+            timeline, so the narrow transport row doesn't overflow. */}
+        <div className="col-start-1 hidden items-center gap-1 lg:flex">
           {tools.map(({ Icon, label, onClick, enabled }) => (
             <Tooltip key={label}>
               <TooltipTrigger asChild>
@@ -513,7 +584,12 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           ))}
         </div>
 
-        <div className="flex items-center gap-1">
+        {/* `col-start-2` is load-bearing: the side cells are `display:none`
+            below lg, which removes them from the grid ENTIRELY, so without
+            explicit placement this auto-places into column 1 — a `1fr` track.
+            That both un-centres the transport and squeezes it hard enough to
+            wrap the timecode onto three lines and overflow the row. */}
+        <div className="col-start-2 flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -530,6 +606,25 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
               </Button>
             </TooltipTrigger>
             <TooltipContent>Jump to start</TooltipContent>
+          </Tooltip>
+          {/* Step back/forward — the ←/→ shortcuts' only on-screen equivalent,
+              and the precise-seek path before Split when there's no keyboard. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  onSeek(currentTime - NUDGE_SEC)
+                }}
+                disabled={!hasClips}
+                aria-label={`Back ${NUDGE_SEC.toString()} second`}
+                className="h-7 w-7"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Back {NUDGE_SEC}s (←)</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -556,6 +651,23 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                 variant="ghost"
                 size="icon"
                 onClick={() => {
+                  onSeek(currentTime + NUDGE_SEC)
+                }}
+                disabled={!hasClips}
+                aria-label={`Forward ${NUDGE_SEC.toString()} second`}
+                className="h-7 w-7"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Forward {NUDGE_SEC}s (→)</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
                   onSeek(total)
                 }}
                 disabled={!hasClips}
@@ -567,13 +679,14 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
             </TooltipTrigger>
             <TooltipContent>Jump to end</TooltipContent>
           </Tooltip>
-          <div className="ml-3 font-mono text-xs tabular-nums">
+          <div className="ml-2 whitespace-nowrap font-mono text-xs tabular-nums sm:ml-3">
             <span className="text-ink">{formatTimecode(currentTime)}</span>
             <span className="text-muted"> / {formatTimecode(total)}</span>
           </div>
         </div>
 
-        <div className="flex justify-end">
+        {/* Decorative — dropped below lg, where the width is needed. */}
+        <div className="col-start-3 hidden justify-end lg:flex">
           <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted/50">
             On-device · WebCodecs
           </span>
@@ -582,28 +695,56 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
       <div
         ref={viewportRef}
-        className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden pb-2 pt-1.5"
+        // `overscroll-x-contain` keeps a horizontal swipe here from chaining out
+        // to the document — iOS otherwise reads it as a back-navigation.
+        className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain pb-2 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-1.5"
       >
         <div
           ref={scrubRef}
           onPointerDown={(e) => {
-            // Reached only off-clip (clips stop propagation): deselect + scrub.
-            selectClip(null)
-            draggingRef.current = true
-            e.currentTarget.setPointerCapture(e.pointerId)
-            seekFromClientX(e.clientX)
-          }}
-          onPointerMove={(e) => {
-            if (draggingRef.current) seekFromClientX(e.clientX)
-          }}
-          onPointerUp={(e) => {
-            draggingRef.current = false
-            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-              e.currentTarget.releasePointerCapture(e.pointerId)
+            // Reached only off-clip (clips stop propagation).
+            if (!isPrimaryPointer(e) || gestureBusy()) return
+            // Touch can't drag-scrub here: this surface sits inside a horizontal
+            // scroller and yields the drag to the native pan (touch-action:
+            // pan-x), so the browser will fire pointercancel. Touch therefore
+            // seeks on TAP (in pointerup) and scrubs via the playhead knob.
+            const live = e.pointerType !== 'touch'
+            scrubDragRef.current = {
+              pointerId: e.pointerId,
+              startClientX: e.clientX,
+              moved: false,
+              live,
+            }
+            if (live) {
+              selectClip(null)
+              e.currentTarget.setPointerCapture(e.pointerId)
+              seekFromClientX(e.clientX)
             }
           }}
-          onPointerCancel={() => {
-            draggingRef.current = false
+          onPointerMove={(e) => {
+            const s = scrubDragRef.current
+            if (!s || s.pointerId !== e.pointerId) return
+            if (Math.abs(e.clientX - s.startClientX) > DRAG_THRESHOLD) {
+              s.moved = true
+            }
+            if (s.live) seekFromClientX(e.clientX)
+          }}
+          onPointerUp={(e) => {
+            const s = scrubDragRef.current
+            if (!s || s.pointerId !== e.pointerId) return
+            scrubDragRef.current = null
+            releaseCapture(e.currentTarget, e.pointerId)
+            // A touch that didn't travel is a tap: deselect + seek there.
+            if (!s.live && !s.moved) {
+              selectClip(null)
+              seekFromClientX(e.clientX)
+            }
+          }}
+          onPointerCancel={(e) => {
+            // The native pan won — this was a scroll, not a scrub.
+            if (scrubDragRef.current?.pointerId === e.pointerId) {
+              scrubDragRef.current = null
+            }
           }}
           onDragEnter={(e) => {
             if (isMediaDrag(e)) e.preventDefault()
@@ -612,7 +753,11 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           onDragLeave={onTimelineDragLeave}
           onDrop={onTimelineDrop}
           style={{ width: `${trackWidth.toString()}px` }}
-          className="relative h-full cursor-pointer select-none"
+          // `pan-x` hands horizontal touch drags to the parent scroller (so a
+          // long timeline is pannable) while still delivering pointerdown/up —
+          // which is what makes tap-to-seek work. `pinch-zoom` is kept so the
+          // page remains zoomable for accessibility.
+          className="relative h-full cursor-pointer select-none [touch-action:pan-x_pinch-zoom]"
         >
           <div className="relative h-6">
             {ticks.map(({ t, major }) => {
@@ -656,6 +801,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                     onPointerDownClip={onClipPointerDown}
                     onPointerMoveClip={onClipPointerMove}
                     onPointerUpClip={onClipPointerUp}
+                    onPointerCancelClip={onClipPointerCancel}
                     onTrimDown={onTrimPointerDown}
                     onTrimMove={onTrimPointerMove}
                     onTrimUp={onTrimPointerUp}
@@ -676,7 +822,24 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
             style={{ left: `${playheadX.toFixed(2)}px` }}
           >
             <div className="absolute inset-y-0 left-1/2 top-1 w-[3px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.6)]" />
-            <div className="absolute left-1/2 top-0 h-3.5 w-[9px] -translate-x-1/2 rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
+            {/* The knob is the grab target: a transparent 44×36 box around a
+                9px marker. `touch-none` claims the drag from the scroller, so
+                this is how you scrub precisely on touch. */}
+            <span
+              role="slider"
+              tabIndex={0}
+              aria-label="Playhead"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(rulerDuration * 10) / 10}
+              aria-valuenow={Math.round(currentTime * 10) / 10}
+              onPointerDown={onPlayheadPointerDown}
+              onPointerMove={onPlayheadPointerMove}
+              onPointerUp={onPlayheadPointerUp}
+              onPointerCancel={onPlayheadPointerUp}
+              className="pointer-events-auto absolute left-1/2 top-0 z-30 flex h-9 w-11 -translate-x-1/2 cursor-ew-resize touch-none items-start justify-center"
+            >
+              <span className="h-3.5 w-[9px] rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
+            </span>
           </div>
 
           {dropIndicatorX != null && (
@@ -687,6 +850,27 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           )}
         </div>
       </div>
+
+      {/* Below lg the transport row has no space for the tools, so they appear
+          here as a contextual pill whenever something is selected. Same `tools`
+          array as the desktop row — one definition, two renderings. */}
+      {selectedClip && (
+        <div className="absolute bottom-3 right-[max(0.5rem,env(safe-area-inset-right))] z-30 flex items-center gap-1 rounded-full border border-edge bg-raised/95 p-1 shadow-lg backdrop-blur lg:hidden">
+          {tools.map(({ Icon, label, onClick, enabled }) => (
+            <Button
+              key={label}
+              variant="ghost"
+              size="icon"
+              onClick={onClick}
+              disabled={!enabled}
+              aria-label={label}
+              className="h-9 w-9 rounded-full"
+            >
+              <Icon className="h-4 w-4" />
+            </Button>
+          ))}
+        </div>
+      )}
     </footer>
   )
 }

@@ -6,6 +6,11 @@ import { useEffect } from 'react'
 import { useEditorStore } from '@/store/editorStore'
 import { projectDuration } from '@/lib/model/selectors'
 
+/** Playhead step (s) for ←/→ and the Timeline's nudge buttons. Exported so the
+ *  keyboard and the on-screen controls can't drift apart — the buttons are the
+ *  only precise-seek path on a phone, where there is no keyboard. */
+export const NUDGE_SEC = 1
+
 export function useEditorKeyboard({
   togglePlay,
   seek,
@@ -47,10 +52,10 @@ export function useEditorKeyboard({
         if (!e.repeat) togglePlay()
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault()
-        seek(st.currentTime - 1)
+        seek(st.currentTime - NUDGE_SEC)
       } else if (e.code === 'ArrowRight') {
         e.preventDefault()
-        seek(st.currentTime + 1)
+        seek(st.currentTime + NUDGE_SEC)
       } else if (e.code === 'Home') {
         e.preventDefault()
         seek(0)

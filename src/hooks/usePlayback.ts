@@ -7,8 +7,9 @@
 // React re-renders.
 
 import { useCallback, useEffect } from 'react'
+import { toast } from 'sonner'
 import { useEditorStore } from '@/store/editorStore'
-import { projectDuration } from '@/lib/model/selectors'
+import { clipIsLiveAt, projectDuration } from '@/lib/model/selectors'
 import { clamp } from '@/lib/utils'
 import type { Project } from '@/lib/model/types'
 import type { MediaPool } from '@/lib/render/mediaPool'
@@ -17,16 +18,28 @@ import type { MediaPool } from '@/lib/render/mediaPool'
  *  local time — small enough to stay in sync, large enough to avoid stutter. */
 const DRIFT = 0.3
 
-function syncVideos(project: Project, t: number, pool: MediaPool, playing: boolean) {
+function noop() {
+  /* a refused prime needs no handling — the clip isn't playing yet anyway */
+}
+
+function syncVideos(
+  project: Project,
+  t: number,
+  pool: MediaPool,
+  playing: boolean,
+) {
   for (const track of project.tracks) {
     for (const clip of track.clips) {
       if (clip.type !== 'video') continue
       const el = pool.videos.get(clip.id)
       if (!el) continue
-      const live = t >= clip.start && t <= clip.start + clip.duration
+      const live = clipIsLiveAt(clip, t)
       if (live) {
         const local = clip.trimIn + (t - clip.start)
-        if (Math.abs(el.currentTime - local) > DRIFT && Number.isFinite(local)) {
+        if (
+          Math.abs(el.currentTime - local) > DRIFT &&
+          Number.isFinite(local)
+        ) {
           try {
             el.currentTime = local
           } catch {
@@ -34,10 +47,59 @@ function syncVideos(project: Project, t: number, pool: MediaPool, playing: boole
           }
         }
         el.muted = clip.muted ?? false
-        if (playing && el.paused) el.play().catch(() => {})
-        else if (!playing && !el.paused) el.pause()
+        if (playing && el.paused) {
+          el.play().catch((err: unknown) => {
+            // Autoplay was refused (iOS: play() must originate in the task that
+            // handled a user gesture — see primeAndPlay). Stop the virtual clock
+            // rather than letting the playhead run on over a frozen frame, which
+            // looks like a rendering bug and exports perfectly fine.
+            if (
+              !(err instanceof DOMException) ||
+              err.name !== 'NotAllowedError'
+            )
+              return
+            const st = useEditorStore.getState()
+            if (!st.playing) return // already handled this attempt
+            st.setPlaying(false)
+            toast.error('Playback needs a tap — press play again.')
+          })
+        } else if (!playing && !el.paused) el.pause()
       } else if (!el.paused) {
         el.pause()
+      }
+    }
+  }
+}
+
+/**
+ * Start the clips live at `t`, and clear the gesture restriction on the rest.
+ *
+ * WebKit only lets an element begin playing from inside the task that handled a
+ * user gesture. The rAF clock calls `play()` from a LATER task, so on iOS every
+ * such call is refused — silently, since the rejection was swallowed. Calling
+ * play() here, synchronously inside `togglePlay` (which runs in the click/keydown
+ * task), is what actually permits playback.
+ *
+ * Non-live elements are primed too — play() then an immediate pause() in the same
+ * task, so nothing is ever audible — because a clip further down the timeline
+ * would otherwise hit the same refusal when the playhead reaches it. They are
+ * primed UNMUTED on purpose: priming muted only lifts WebKit's video restriction,
+ * not the audio one, so a later unmuted play() would still be blocked.
+ */
+function primeAndPlay(project: Project, t: number, pool: MediaPool) {
+  for (const track of project.tracks) {
+    for (const clip of track.clips) {
+      if (clip.type !== 'video') continue
+      const el = pool.videos.get(clip.id)
+      if (!el) continue
+      const playing = el.play()
+      if (clipIsLiveAt(clip, t)) {
+        playing.catch(() => {}) // syncVideos surfaces a real refusal
+      } else {
+        // Prime-only: stop it again as soon as it starts, so nothing is heard.
+        playing.then(() => {
+          el.pause()
+        }, noop)
       }
     }
   }
@@ -51,9 +113,13 @@ export function usePlayback(poolRef: React.RefObject<MediaPool>) {
     const st = useEditorStore.getState()
     const total = projectDuration(st.project)
     if (total <= 0) return
-    if (!st.playing && st.currentTime >= total) setCurrentTime(0)
+    const restart = !st.playing && st.currentTime >= total
+    const t = restart ? 0 : st.currentTime
+    if (restart) setCurrentTime(0)
+    // Must happen synchronously here, inside the gesture's own task — see above.
+    if (!st.playing) primeAndPlay(st.project, t, poolRef.current)
     setPlaying(!st.playing)
-  }, [setCurrentTime, setPlaying])
+  }, [poolRef, setCurrentTime, setPlaying])
 
   const seek = useCallback(
     (t: number) => {

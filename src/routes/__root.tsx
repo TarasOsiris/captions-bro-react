@@ -15,7 +15,14 @@ export const Route = createRootRoute({
     return {
       meta: [
         { charSet: 'utf-8' },
-        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+        // `viewport-fit=cover` is what makes env(safe-area-inset-*) report real
+        // values — without it they're all 0. The manifest declares
+        // display:standalone, so an installed PWA owns the full screen and the
+        // chrome (TopBar, mobile rail, ExportScreen) must pad for the insets.
+        {
+          name: 'viewport',
+          content: 'width=device-width, initial-scale=1, viewport-fit=cover',
+        },
         ...meta,
       ],
       links: [

@@ -3,7 +3,7 @@
 // caller attaches the actual decoded source to each item (a <video>/<img> in the
 // preview, a mediabunny frame in export) before handing the list to the compositor.
 
-import { assetOf } from './selectors'
+import { assetOf, clipIsLiveAt } from './selectors'
 import type { Clip, MediaAsset, Project } from './types'
 
 export interface SceneItem {
@@ -22,7 +22,7 @@ export function resolveScene(project: Project, t: number): SceneItem[] {
   for (const track of project.tracks) {
     if (track.type === 'audio') continue
     for (const clip of track.clips) {
-      if (t >= clip.start && t <= clip.start + clip.duration) {
+      if (clipIsLiveAt(clip, t)) {
         items.push({
           clip,
           asset: assetOf(project, clip),

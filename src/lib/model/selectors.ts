@@ -30,6 +30,27 @@ export function trackOfClip(project: Project, id: string): Track | null {
   return project.tracks.find((t) => t.clips.some((c) => c.id === id)) ?? null
 }
 
+/** The track new clips land on. Single video track today; when an explicit
+ *  "active track" arrives, it changes here and nowhere else. */
+export function videoTrack(project: Project): Track {
+  return project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
+}
+
+/** Whether `clip` is on screen at time `t`. Inclusive at both ends, matching
+ *  `resolveScene` — the one definition of the live window, so the compositor,
+ *  the playback element sync and the selection UI can't disagree about a
+ *  boundary. */
+export function clipIsLiveAt(clip: Clip, t: number): boolean {
+  return t >= clip.start && t <= clip.start + clip.duration
+}
+
+/** Where to move the playhead so `clip` is actually visible, or null if `t`
+ *  already sits on it. Selecting a clip whose range excludes the playhead would
+ *  otherwise show the selection over unrelated footage. */
+export function revealTime(clip: Clip, t: number): number | null {
+  return clipIsLiveAt(clip, t) ? null : clip.start
+}
+
 export function assetOf(
   project: Project,
   clip: Clip | null,

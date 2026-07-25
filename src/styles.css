@@ -88,6 +88,39 @@
   --radius: 0.625rem;
 }
 
+/* ── Editor chrome geometry ──────────────────────────────────────────────────
+   THE single source of truth for the fixed bottom chrome. The Timeline's own
+   height, the mobile dock's sheet anchor and the toast offset all read these,
+   so they cannot drift apart (this file's numbers used to be duplicated as a
+   magic `19rem` in components/ui/sonner.tsx).
+
+   Plain custom properties, NOT @theme tokens: these change under a media
+   query, which theme tokens can't do. */
+:root {
+  --timeline-h: 18rem; /* desktop — byte-for-byte the old h-72 */
+  --rail-h: 0rem; /* no mobile dock at lg+ */
+}
+
+/* 64rem === Tailwind's `lg`. These properties and the `lg:` structural fork must
+   flip at the same width, and CSS can't read a theme breakpoint here. */
+@media (width < 64rem) {
+  :root {
+    /* Fluid on HEIGHT, not width: a landscape phone (844×390) clears every
+       width breakpoint and still has no vertical room. Floored so the ruler
+       (h-6) + one track lane (h-14) + the transport (h-11) always fit; capped
+       so a tall tablet doesn't hand the timeline half the screen. */
+    --timeline-h: clamp(9.5rem, 30dvh, 15rem);
+    --rail-h: 3.5rem;
+  }
+}
+
+/* Toasts must clear ALL bottom chrome plus the home indicator. */
+:root {
+  --toast-offset-bottom: calc(
+    var(--timeline-h) + var(--rail-h) + 1rem + env(safe-area-inset-bottom)
+  );
+}
+
 * {
   box-sizing: border-box;
 }
@@ -97,9 +130,19 @@ body {
   height: 100%;
 }
 
+html {
+  /* iOS Safari inflates text when rotating to landscape without this. */
+  -webkit-text-size-adjust: 100%;
+  /* No grey flash on tap — controls carry their own active/hover states. */
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
   overflow: hidden;
+  /* Kill iOS rubber-banding / pull-to-refresh on the app shell. Per-surface
+     `touch-action` (see Timeline) governs gestures; never set that globally. */
+  overscroll-behavior: none;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   /* @theme inline tokens aren't exposed as --color-* props for hand-written

@@ -18,7 +18,14 @@ const buttonVariants = cva(
       size: {
         default: 'h-8 gap-2 px-4 text-sm',
         sm: 'h-7 gap-1.5 px-3 text-xs',
-        icon: 'h-8 w-8 rounded-md',
+        // Icon buttons are visually small (call sites routinely override down to
+        // h-7/h-6), which puts them well under the 44px touch minimum. A
+        // transparent ::after grows the HIT area by 8px on every side without
+        // moving a single pixel — 40–48px depending on the override, and no
+        // per-call-site churn. `relative` is required: the base string sets no
+        // position, so the pseudo-element would otherwise anchor to an ancestor.
+        // `disabled:pointer-events-none` in the base keeps disabled areas inert.
+        icon: "relative h-8 w-8 rounded-md after:absolute after:-inset-2 after:content-['']",
       },
     },
     defaultVariants: {

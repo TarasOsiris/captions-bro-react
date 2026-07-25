@@ -12,6 +12,9 @@ interface ExportScreenProps {
   onCancel: () => void
   /** Dismiss the finished screen (X while done) — releases the file URL. */
   onClose: () => void
+  /** The finished MP4. Held by useExport rather than re-fetched from the object
+   *  URL, which would put a second full copy of the file in RAM. */
+  getResultBlob: () => Blob | null
 }
 
 const PREVIEW_RADIUS = 20
@@ -39,7 +42,11 @@ function ringPath(w: number, h: number, r: number): string {
   ].join(' ')
 }
 
-export function ExportScreen({ onCancel, onClose }: ExportScreenProps) {
+export function ExportScreen({
+  onCancel,
+  onClose,
+  getResultBlob,
+}: ExportScreenProps) {
   const progress = useEditorStore((s) => s.exportProgress)
   const downloadUrl = useEditorStore((s) => s.downloadUrl)
   const downloadName = useEditorStore((s) => s.downloadName)
@@ -98,9 +105,12 @@ export function ExportScreen({ onCancel, onClose }: ExportScreenProps) {
   }
 
   const doShare = async () => {
-    if (!downloadUrl || !downloadName) return
+    if (!downloadName) return
+    // Reuse the Blob useExport already holds. Re-fetching downloadUrl would
+    // allocate a second full copy of the video right when memory is tightest.
+    const blob = getResultBlob()
+    if (!blob) return
     try {
-      const blob = await fetch(downloadUrl).then((r) => r.blob())
       const file = new File([blob], downloadName, { type: 'video/mp4' })
       if (navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: downloadName })
@@ -111,20 +121,22 @@ export function ExportScreen({ onCancel, onClose }: ExportScreenProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-bg text-ink">
+    <div className="fixed inset-0 z-50 flex flex-col bg-bg pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink">
       <div className="flex h-14 shrink-0 items-center px-4">
         <button
           type="button"
           onClick={done ? onClose : onCancel}
           aria-label={done ? 'Close' : 'Cancel export'}
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-raised text-muted transition hover:text-ink"
+          // A raw <button>, so the Button component's hit-area expansion doesn't
+          // reach it — sized to the touch minimum directly.
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-muted transition hover:text-ink"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
 
       <div className="flex shrink-0 flex-col items-center gap-2 px-6 text-center">
-        <div className="flex min-h-[3.25rem] items-center justify-center">
+        <div className="flex min-h-[2.5rem] items-center justify-center sm:min-h-[3.25rem]">
           {done ? (
             <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
               Choose where to share
@@ -215,9 +227,21 @@ export function ExportScreen({ onCancel, onClose }: ExportScreenProps) {
       </div>
 
       {/* Fixed-height slot so the preview never reflows between phases. */}
-      <div className="flex h-[104px] shrink-0 items-start justify-center gap-8 px-6">
+      <div className="flex h-[92px] shrink-0 items-start justify-center gap-8 px-6 sm:h-[104px]">
         {done && (
+          // Share leads where file-sharing exists: on iOS it's the only path
+          // that reliably saves to Photos, and it's where a phone user is going.
           <>
+            {canShare && (
+              <ShareTile
+                icon={<Share2 className="h-5 w-5" />}
+                label="Share"
+                emphasis
+                onClick={() => {
+                  void doShare()
+                }}
+              />
+            )}
             <ShareTile
               icon={
                 saved ? (
@@ -229,15 +253,6 @@ export function ExportScreen({ onCancel, onClose }: ExportScreenProps) {
               label={saved ? 'Saved' : 'Download'}
               onClick={doDownload}
             />
-            {canShare && (
-              <ShareTile
-                icon={<Share2 className="h-5 w-5" />}
-                label="Share"
-                onClick={() => {
-                  void doShare()
-                }}
-              />
-            )}
           </>
         )}
       </div>
@@ -255,10 +270,13 @@ function ShareTile({
   icon,
   label,
   onClick,
+  emphasis = false,
 }: {
   icon: React.ReactNode
   label: string
   onClick: () => void
+  /** Render as the primary action (the accent fill). */
+  emphasis?: boolean
 }) {
   return (
     <button
@@ -266,7 +284,11 @@ function ShareTile({
       onClick={onClick}
       className="flex flex-col items-center gap-2"
     >
-      <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-raised text-ink shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] transition hover:brightness-125">
+      <span
+        className={`flex h-14 w-14 items-center justify-center rounded-2xl shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] transition hover:brightness-125 ${
+          emphasis ? 'bg-accent text-white' : 'bg-raised text-ink'
+        }`}
+      >
         {icon}
       </span>
       <span className="text-[11px] text-muted">{label}</span>

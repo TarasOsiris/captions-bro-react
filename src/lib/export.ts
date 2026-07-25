@@ -12,6 +12,7 @@
 // module's public API.
 
 import { drawScene } from './render/compositor'
+import { isAppleWebKit } from './platform'
 import { resolveScene } from './model/scene'
 import { allClips, assetOf, projectDuration } from './model/selectors'
 import { IDENTITY } from './transform'
@@ -68,6 +69,30 @@ export async function canExportH264(): Promise<boolean> {
     return await mb.canEncodeVideo('avc')
   } catch {
     return false
+  }
+}
+
+export type ExportCapability =
+  | { ok: true }
+  /** `reason` is user-facing copy explaining what to actually do about it. */
+  | { ok: false; reason: string }
+
+/**
+ * `canExportH264` plus advice the user can act on. Codec knowledge stays in this
+ * module (the single export seam) rather than leaking into the UI.
+ *
+ * The capability itself is feature-detected; the platform check only chooses
+ * WHICH remediation to suggest. That distinction matters on iOS, where every
+ * browser is WebKit — so "try Chrome" is actively wrong there, and the real gate
+ * is the OS version (WebCodecs video encode landed in Safari 26 / iOS 26).
+ */
+export async function exportCapability(): Promise<ExportCapability> {
+  if (await canExportH264()) return { ok: true }
+  return {
+    ok: false,
+    reason: isAppleWebKit()
+      ? "This iOS version can't encode H.264 in the browser. Update to iOS 26 or later, or use the Captions Bro iOS app."
+      : "This browser can't encode H.264 video. Try Chrome, Edge, or Safari 26+.",
   }
 }
 
@@ -268,7 +293,9 @@ export function exportVideo(
       el.height = out.height
       const drawCtx = el.getContext('2d')
       if (!drawCtx) {
-        throw new ExportInvalidFileError('Canvas is unavailable in this browser.')
+        throw new ExportInvalidFileError(
+          'Canvas is unavailable in this browser.',
+        )
       }
 
       conversion = await mb.Conversion.init({
@@ -450,7 +477,8 @@ export function exportTimeline(
     el.width = out.width
     el.height = out.height
     const ctx = el.getContext('2d')
-    if (!ctx) throw new ExportInvalidFileError('Canvas is unavailable in this browser.')
+    if (!ctx)
+      throw new ExportInvalidFileError('Canvas is unavailable in this browser.')
 
     // One decoder per video clip; one decoded bitmap per referenced image asset.
     const sinks = new Map<string, InstanceType<typeof mb.VideoSampleSink>>()

@@ -9,13 +9,16 @@ export type ExportPhase = 'idle' | 'exporting' | 'done'
 export interface ExportSlice {
   /** H.264 encode capability (null until probed). */
   supported: boolean | null
+  /** Why export is unavailable — user-facing, platform-aware (see
+   *  exportCapability in lib/export.ts). Null when supported or unprobed. */
+  unsupportedReason: string | null
   exportPhase: ExportPhase
   exportProgress: number
   downloadUrl: string | null
   downloadName: string | null
   /** The finished file has no audio (browser couldn't encode it). */
   exportSilent: boolean
-  setSupported: (v: boolean | null) => void
+  setSupported: (v: boolean | null, reason?: string | null) => void
   beginExport: () => void
   setExportProgress: (p: number) => void
   completeExport: (url: string, name: string, silent: boolean) => void
@@ -25,15 +28,17 @@ export interface ExportSlice {
 
 export const createExportSlice: ImmerSlice<ExportSlice> = (set) => ({
   supported: null,
+  unsupportedReason: null,
   exportPhase: 'idle',
   exportProgress: 0,
   downloadUrl: null,
   downloadName: null,
   exportSilent: false,
 
-  setSupported: (v) =>
+  setSupported: (v, reason = null) =>
     set((s) => {
       s.supported = v
+      s.unsupportedReason = reason
     }),
 
   beginExport: () =>

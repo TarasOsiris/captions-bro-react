@@ -1,7 +1,12 @@
-// Right-side inspector for the selected clip. The column width is reserved whether
-// or not a clip is selected, so toggling it never resizes the preview (the centered
-// video would otherwise jump on select/deselect). Placeholder for now — clip property
+// Right-side inspector for the selected clip. Placeholder for now — clip property
 // controls (transform, timing, volume, captions…) will live here.
+//
+// AT lg+ the column width is reserved whether or not a clip is selected, so
+// toggling it never resizes the preview (the centered video would otherwise jump
+// on select/deselect). That reservation is width-specific and does NOT transfer
+// below lg: there the panel is dropped entirely (256px of dead space on a phone),
+// and when it grows real controls it becomes a second MobileDock sheet — a
+// full-width overlay, so there is nothing to reserve.
 
 import { SlidersHorizontal } from 'lucide-react'
 import { useEditorStore } from '@/store/editorStore'
@@ -12,7 +17,7 @@ export function InspectorPanel() {
 
   // Always reserve the width; blend the empty state into the stage backdrop.
   return (
-    <div className="w-64 shrink-0 bg-stage">
+    <div className="hidden w-64 shrink-0 bg-stage lg:block">
       {clip && (
         <aside className="flex h-full w-full flex-col border-l border-edge bg-surface">
           <div className="flex h-10 shrink-0 items-center px-3">

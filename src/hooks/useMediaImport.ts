@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { useEditorStore } from '@/store/editorStore'
 import { mediaKind } from '@/lib/media'
 import { assetFromFile, clipFromAsset } from '@/lib/model/factories'
+import { videoTrack } from '@/lib/model/selectors'
 import { putAssetBlob } from '@/lib/persistence/assetStore'
 import { generateFilmstrip } from '@/lib/thumbs'
 
@@ -22,9 +23,8 @@ export function useMediaImport() {
     const url = URL.createObjectURL(file)
     const asset = assetFromFile(file, kind, url)
 
-    // Append after the last clip on the (first) video track.
-    const track =
-      st.project.tracks.find((t) => t.type === 'video') ?? st.project.tracks[0]
+    // Append after the last clip on the video track.
+    const track = videoTrack(st.project)
     const start = track.clips.reduce(
       (end, c) => Math.max(end, c.start + c.duration),
       0,
@@ -46,7 +46,10 @@ export function useMediaImport() {
           if (frames.length === 0) return
           // Ignore if this asset was removed before generation finished.
           const assets = useEditorStore.getState().project.assets
-          if (!Object.hasOwn(assets, asset.id) || assets[asset.id].url !== url) {
+          if (
+            !Object.hasOwn(assets, asset.id) ||
+            assets[asset.id].url !== url
+          ) {
             return
           }
           useEditorStore.getState().updateAsset(asset.id, { thumbs: frames })
