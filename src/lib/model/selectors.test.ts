@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { insertionIndex, resolveTrim } from './selectors'
+import {
+  clipIsLiveAt,
+  insertionIndex,
+  overlayTrack,
+  resolveTrim,
+  snapTargets,
+  snapTime,
+} from './selectors'
+import { createProject, createTextClip, createTrack } from './factories'
 import { IDENTITY } from '@/lib/transform'
 import type { Clip } from './types'
 
@@ -95,5 +103,59 @@ describe('resolveTrim', () => {
     expect(
       resolveTrim('right', { trimIn: 0, duration: 8 }, 2, 5, MIN).duration,
     ).toBe(8)
+  })
+})
+
+describe('overlayTrack', () => {
+  it('is null on a fresh project (created lazily on first text insert)', () => {
+    expect(overlayTrack(createProject('t'))).toBeNull()
+  })
+
+  it('finds the overlay track once one exists', () => {
+    const p = createProject('t')
+    const overlay = createTrack('overlay')
+    p.tracks.push(overlay)
+    expect(overlayTrack(p)?.id).toBe(overlay.id)
+  })
+})
+
+describe('snapTargets / snapTime — the free-positioned overlay drag', () => {
+  it('collects 0, the playhead and both edges of every other clip', () => {
+    const p = createProject('t')
+    p.tracks[0].clips = [clip('a', 0, 5), clip('b', 5, 3)]
+    expect(snapTargets(p, 6.5).sort((x, y) => x - y)).toEqual([
+      0, 0, 5, 5, 6.5, 8,
+    ])
+  })
+
+  it('excludes the dragged clip so it cannot snap to itself', () => {
+    const p = createProject('t')
+    const text = createTextClip({ start: 2, duration: 4 })
+    p.tracks[0].clips = [clip('a', 0, 5), text]
+    expect(snapTargets(p, 1, text.id)).not.toContain(2)
+  })
+
+  it('pulls to the nearest target inside the tolerance', () => {
+    expect(snapTime(5.08, [0, 5, 8], 0.15)).toBe(5)
+    expect(snapTime(4.9, [0, 5, 8], 0.15)).toBe(5)
+  })
+
+  it('leaves a time alone outside the tolerance', () => {
+    expect(snapTime(5.4, [0, 5, 8], 0.15)).toBeCloseTo(5.4)
+    expect(snapTime(3, [], 0.15)).toBe(3)
+  })
+
+  it('picks the closest when two targets are both in range', () => {
+    expect(snapTime(5.06, [5, 5.1], 0.15)).toBeCloseTo(5.1)
+  })
+})
+
+describe('clipIsLiveAt — the live window the export fast path relies on', () => {
+  it('is inclusive at both ends', () => {
+    const c = createTextClip({ start: 2, duration: 3 })
+    expect(clipIsLiveAt(c, 2)).toBe(true)
+    expect(clipIsLiveAt(c, 5)).toBe(true)
+    expect(clipIsLiveAt(c, 1.99)).toBe(false)
+    expect(clipIsLiveAt(c, 5.01)).toBe(false)
   })
 })

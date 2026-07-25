@@ -5,8 +5,10 @@ import {
   applyMove,
   applyRotation,
   applyScale,
+  containFit,
   croppedRect,
   mediaRect,
+  placeRect,
 } from './transform'
 
 describe('mediaRect — the WYSIWYG geometry (preview == export)', () => {
@@ -46,6 +48,71 @@ describe('mediaRect — the WYSIWYG geometry (preview == export)', () => {
     expect(big.cx / small.cx).toBeCloseTo(2)
     expect(big.w / small.w).toBeCloseTo(2)
     expect(big.rotationDeg).toBe(small.rotationDeg)
+  })
+})
+
+describe('placeRect — natural-size placement (the text path)', () => {
+  const W = 1920
+  const H = 1080
+
+  it('places a natural-size box AS IS — it does not contain-fit it', () => {
+    // The whole reason placeRect exists: a 2:1 text block must stay 400×200,
+    // not be blown up to 1920 wide the way mediaRect would size a 2:1 video.
+    const r = placeRect(IDENTITY, 400, 200, W, H)
+    expect(r.cx).toBeCloseTo(960)
+    expect(r.cy).toBeCloseTo(540)
+    expect(r.w).toBeCloseTo(400)
+    expect(r.h).toBeCloseTo(200)
+    expect(mediaRect(IDENTITY, 2, W, H).w).toBeCloseTo(1920) // contrast
+  })
+
+  it('applies scale, translation and rotation exactly as mediaRect does', () => {
+    const t = applyRotation(
+      applyMove(applyScale(IDENTITY, 1.5), 0.25, -0.1),
+      30,
+    )
+    const r = placeRect(t, 400, 200, W, H)
+    expect(r.w).toBeCloseTo(600)
+    expect(r.h).toBeCloseTo(300)
+    expect(r.cx).toBeCloseTo(960 + 0.25 * W)
+    expect(r.cy).toBeCloseTo(540 - 0.1 * H)
+    expect(r.rotationDeg).toBe(30)
+  })
+
+  it('mediaRect is exactly placeRect ∘ containFit (the refactor is behaviour-free)', () => {
+    const transforms = [
+      IDENTITY,
+      applyScale(IDENTITY, 2),
+      applyMove(IDENTITY, 0.3, -0.2),
+      applyRotation(IDENTITY, 45, false),
+      applyCrop(applyScale(IDENTITY, 1.5), 'left', 0.2),
+    ]
+    for (const t of transforms) {
+      for (const aspect of [16 / 9, 9 / 16, 1, 4 / 3, 2.39]) {
+        for (const [cw, ch] of [
+          [1920, 1080],
+          [960, 540],
+          [800, 600],
+        ]) {
+          const fit = containFit(aspect, cw, ch)
+          expect(mediaRect(t, aspect, cw, ch)).toEqual(
+            placeRect(t, fit.w, fit.h, cw, ch),
+          )
+        }
+      }
+    }
+  })
+
+  it('is resolution-independent when the natural size scales with the canvas', () => {
+    // How text behaves: its box is derived from canvas-relative fractions, so
+    // halving the canvas halves the natural size — and every dimension halves.
+    const t = applyMove(applyScale(IDENTITY, 1.5), 0.1, 0.2)
+    const big = placeRect(t, 800, 200, 1920, 1080)
+    const small = placeRect(t, 400, 100, 960, 540)
+    expect(big.cx / small.cx).toBeCloseTo(2)
+    expect(big.cy / small.cy).toBeCloseTo(2)
+    expect(big.w / small.w).toBeCloseTo(2)
+    expect(big.h / small.h).toBeCloseTo(2)
   })
 })
 

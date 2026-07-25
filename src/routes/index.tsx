@@ -10,6 +10,7 @@ import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
 import { useUndoRedo } from '@/hooks/useUndoRedo'
 import { useClipInsert } from '@/hooks/useClipInsert'
+import { useFontLoader } from '@/hooks/useFontLoader'
 import { ExportScreen } from '@/components/editor/ExportScreen'
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { MediaPanel } from '@/components/editor/MediaPanel'
@@ -47,6 +48,9 @@ function Editor() {
     enabled: exportPhase === 'idle',
   })
   usePersistence()
+  // Keeps every face the document uses loaded — including after a reload or an
+  // undo, which have no UI action behind them.
+  useFontLoader()
 
   // Release all source URLs at unmount.
   useEffect(
@@ -112,6 +116,7 @@ function Editor() {
           onPickFile={pickFile}
           onSeek={seek}
           onAddToTimeline={handleAddToTimeline}
+          onEditStart={saveUndo}
         />
         <PreviewStage
           poolRef={poolRef}
@@ -120,7 +125,7 @@ function Editor() {
           onDropFile={handleImport}
           onPickFile={pickFile}
         />
-        <InspectorPanel />
+        <InspectorPanel onEditStart={saveUndo} />
       </div>
 
       <Timeline
@@ -134,6 +139,7 @@ function Editor() {
         onPickFile={pickFile}
         onSeek={seek}
         onAddToTimeline={handleAddToTimeline}
+        onEditStart={saveUndo}
       />
 
       <input

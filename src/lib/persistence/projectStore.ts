@@ -3,7 +3,12 @@
 // re-derived on load from the IndexedDB blob (see assetStore + usePersistence).
 // Pure/SSR-safe: guarded localStorage access, no DOM.
 
-import type { CanvasSettings, MediaKind, Project, Track } from '@/lib/model/types'
+import type {
+  CanvasSettings,
+  MediaKind,
+  Project,
+  Track,
+} from '@/lib/model/types'
 
 const KEY = 'cb-project'
 const VERSION = 1

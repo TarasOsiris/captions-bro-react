@@ -3,9 +3,12 @@ import { RotateCw, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useEditorStore } from '@/store/editorStore'
 import { resolveScene } from '@/lib/model/scene'
-import { allClips, assetOf, clipAspect, clipById } from '@/lib/model/selectors'
+import { allClips, assetOf, clipById } from '@/lib/model/selectors'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { drawScene } from '@/lib/render/compositor'
+import { clipNaturalSize, textSourceForClip } from '@/lib/render/textSource'
+import { CanvasTextEditor } from '@/components/editor/CanvasTextEditor'
+import { withTextDefaults } from '@/lib/model/text'
 import {
   applyCrop,
   applyMove,
@@ -13,12 +16,20 @@ import {
   applyScale,
   cropInsets,
   croppedRect,
-  mediaRect,
+  placeRect,
 } from '@/lib/transform'
 import type { CropInsets } from '@/lib/transform'
 import type { DrawItem, RenderSource } from '@/lib/render/compositor'
 import type { MediaPool } from '@/lib/render/mediaPool'
-import type { Clip, MediaAsset, Transform } from '@/lib/model/types'
+import type { Clip, MediaAsset, TextStyle, Transform } from '@/lib/model/types'
+import { clamp as clampNumber } from '@/lib/math'
+
+/** Font-size bounds as a fraction of canvas height (≈22px…432px at 1080p). */
+const MIN_FONT_SIZE = 0.02
+const MAX_FONT_SIZE = 0.4
+/** Wrap-width bounds as a fraction of canvas width. */
+const MIN_BOX_WIDTH = 0.05
+const MAX_BOX_WIDTH = 1
 
 interface PreviewStageProps {
   poolRef: React.RefObject<MediaPool>
@@ -34,23 +45,45 @@ interface PreviewStageProps {
  * zoom); the 4 edge midpoints TRIM that edge (crop, not scale) — `edge` names the
  * inset each one drives.
  */
-const HANDLES: Array<{
+interface HandleDef {
   x: number
   y: number
   cursor: string
+  /** 'scale' = uniform zoom (media) · 'fontScale' = type size (text) ·
+   *  'crop' = trim that edge (media) · 'wrap' = wrap width (text). */
+  role: 'scale' | 'fontScale' | 'crop' | 'wrap'
   edge?: keyof CropInsets
-}> = [
+  side?: 'left' | 'right'
+}
+
+const MEDIA_HANDLES: HandleDef[] = [
   // Edges FIRST, corners last: their expanded hit areas overlap once the media
   // box is narrow, and paint order decides the winner. Scale (corners) is the
   // more commonly wanted gesture, so it must be on top.
-  { x: 0.5, y: 0, cursor: 'ns-resize', edge: 'top' },
-  { x: 1, y: 0.5, cursor: 'ew-resize', edge: 'right' },
-  { x: 0.5, y: 1, cursor: 'ns-resize', edge: 'bottom' },
-  { x: 0, y: 0.5, cursor: 'ew-resize', edge: 'left' },
-  { x: 0, y: 0, cursor: 'nwse-resize' },
-  { x: 1, y: 0, cursor: 'nesw-resize' },
-  { x: 1, y: 1, cursor: 'nwse-resize' },
-  { x: 0, y: 1, cursor: 'nesw-resize' },
+  { x: 0.5, y: 0, cursor: 'ns-resize', role: 'crop', edge: 'top' },
+  { x: 1, y: 0.5, cursor: 'ew-resize', role: 'crop', edge: 'right' },
+  { x: 0.5, y: 1, cursor: 'ns-resize', role: 'crop', edge: 'bottom' },
+  { x: 0, y: 0.5, cursor: 'ew-resize', role: 'crop', edge: 'left' },
+  { x: 0, y: 0, cursor: 'nwse-resize', role: 'scale' },
+  { x: 1, y: 0, cursor: 'nesw-resize', role: 'scale' },
+  { x: 1, y: 1, cursor: 'nwse-resize', role: 'scale' },
+  { x: 0, y: 1, cursor: 'nesw-resize', role: 'scale' },
+]
+
+/**
+ * Text has no croppable source and no honest vertical resize — its box height is
+ * content-driven — so the top/bottom midpoints are dropped entirely. The side
+ * midpoints set the WRAP WIDTH instead, and the corners scale the type rather
+ * than `transform.scale`, so the inspector's Size field stays the single
+ * authority for how big the text is.
+ */
+const TEXT_HANDLES: HandleDef[] = [
+  { x: 0, y: 0.5, cursor: 'ew-resize', role: 'wrap', side: 'left' },
+  { x: 1, y: 0.5, cursor: 'ew-resize', role: 'wrap', side: 'right' },
+  { x: 0, y: 0, cursor: 'nwse-resize', role: 'fontScale' },
+  { x: 1, y: 0, cursor: 'nesw-resize', role: 'fontScale' },
+  { x: 1, y: 1, cursor: 'nwse-resize', role: 'fontScale' },
+  { x: 0, y: 1, cursor: 'nesw-resize', role: 'fontScale' },
 ]
 
 /** Fields every gesture carries. `pointerId` makes the gesture exclusive to the
@@ -93,6 +126,24 @@ type Gesture =
       /** Media rotation (rad) — the drag is projected onto its local axes. */
       rotationRad: number
     })
+  // Text-only. Geometrically identical to 'scale', but commits `fontSize`.
+  | (GestureBase & {
+      kind: 'fontScale'
+      centerX: number
+      centerY: number
+      startDist: number
+      startFontSize: number
+    })
+  // Text-only. Projects the drag onto the block's local x axis, like 'crop'.
+  | (GestureBase & {
+      kind: 'wrap'
+      side: 'left' | 'right'
+      startX: number
+      startY: number
+      rotationRad: number
+      frameW: number
+      startBoxWidth: number
+    })
 
 export function PreviewStage({
   poolRef,
@@ -114,10 +165,28 @@ export function PreviewStage({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gestureRef = useRef<Gesture | null>(null)
   const [frameSize, setFrameSize] = useState({ w: 0, h: 0 })
+  const [editingClipId, setEditingClipId] = useState<string | null>(null)
+  // Double-tap detection, done by hand rather than via `e.detail`, which is
+  // unreliable on touch. Works identically for mouse and finger.
+  const lastTapRef = useRef<{
+    clipId: string
+    t: number
+    x: number
+    y: number
+  } | null>(null)
 
   const hasClips = project.tracks.some((t) => t.clips.length > 0)
   const selectedClip = clipById(project, selectedClipId)
-  const selectedAspect = clipAspect(project, selectedClip)
+  // The natural size (contain-fit box for media, laid-out block for text) in the
+  // FRAME's CSS pixels — the same fractions the canvas resolves against, so the
+  // DOM chrome lands exactly on the drawn pixels.
+  const selectedSize = clipNaturalSize(
+    project,
+    selectedClip,
+    frameSize.w,
+    frameSize.h,
+  )
+  const isText = selectedClip?.type === 'text'
 
   // Distinct sources to keep mounted: a <video> per video clip, a shared <img>
   // per referenced image asset.
@@ -160,7 +229,14 @@ export function PreviewStage({
     if (!ctx) return
     ctx.imageSmoothingQuality = 'high'
 
-    const sourceFor = (clip: Clip): RenderSource | null => {
+    const sourceFor = (
+      clip: Clip,
+      cw: number,
+      ch: number,
+    ): RenderSource | null => {
+      // Text is procedural — no pool entry, never "not ready", and produced by
+      // the SAME factory both export paths use, so it cannot drift.
+      if (clip.type === 'text') return textSourceForClip(clip, cw, ch)
       if (clip.type === 'video') {
         const v = poolRef.current.videos.get(clip.id)
         if (!v || v.readyState < 2 || v.videoWidth === 0) return null
@@ -204,7 +280,7 @@ export function PreviewStage({
       }
       const items: DrawItem[] = resolveScene(proj, currentTime).map((item) => ({
         transform: item.clip.transform,
-        source: sourceFor(item.clip),
+        source: sourceFor(item.clip, cw, ch),
       }))
       drawScene(ctx, renderCanvas, items)
       raf = requestAnimationFrame(render)
@@ -269,30 +345,40 @@ export function PreviewStage({
   }
 
   // Selection-chrome geometry for the selected clip (paused only) — the VISIBLE
-  // (cropped) box, so the handles sit on the trimmed edges.
+  // (cropped) box, so the handles sit on the trimmed edges. Text never sets
+  // crop, so `croppedRect` is the identity for it.
   const rect =
-    selectedClip && selectedAspect != null && frameSize.w > 0
+    selectedClip && selectedSize && frameSize.w > 0
       ? croppedRect(
-          mediaRect(
+          placeRect(
             selectedClip.transform,
-            selectedAspect,
+            selectedSize.w,
+            selectedSize.h,
             frameSize.w,
             frameSize.h,
           ),
         )
       : null
 
-  const centerClient = (transform: Transform, aspect: number) => {
+  /** A clip's natural size measured against the LIVE frame rect — gestures read
+   *  the frame directly rather than the debounced `frameSize` state. */
+  const naturalSizeFor = (clip: Clip, frameW: number, frameH: number) =>
+    clipNaturalSize(useEditorStore.getState().project, clip, frameW, frameH)
+
+  const centerClient = (
+    transform: Transform,
+    size: { w: number; h: number },
+  ) => {
     const el = frameRef.current
     if (!el) return null
     const fr = el.getBoundingClientRect()
-    const r = mediaRect(transform, aspect, fr.width, fr.height)
+    const r = placeRect(transform, size.w, size.h, fr.width, fr.height)
     return { x: fr.left + r.cx, y: fr.top + r.cy }
   }
 
   const hitTestClip = (
     transform: Transform,
-    aspect: number,
+    size: { w: number; h: number },
     clientX: number,
     clientY: number,
   ): boolean => {
@@ -300,7 +386,9 @@ export function PreviewStage({
     if (!el) return false
     const fr = el.getBoundingClientRect()
     // Hit-test the visible (cropped) box, so trimmed-away regions aren't grabbable.
-    const r = croppedRect(mediaRect(transform, aspect, fr.width, fr.height))
+    const r = croppedRect(
+      placeRect(transform, size.w, size.h, fr.width, fr.height),
+    )
     const dx = clientX - fr.left - r.cx
     const dy = clientY - fr.top - r.cy
     const rad = (-r.rotationDeg * Math.PI) / 180
@@ -327,12 +415,23 @@ export function PreviewStage({
   const canBeginGesture = (e: React.PointerEvent) =>
     isPrimaryPointer(e) && gestureRef.current == null
 
+  /** Live text-style write during a canvas gesture. The undo snapshot was
+   *  already taken at gesture start, so this must never take another. */
+  const patchTextStyle = (clipId: string, patch: Partial<TextStyle>) => {
+    const st = useEditorStore.getState()
+    const clip = clipById(st.project, clipId)
+    if (!clip) return
+    st.updateClip(clipId, {
+      textStyle: { ...withTextDefaults(clip.textStyle), ...patch },
+    })
+  }
+
   const beginScale = (e: React.PointerEvent, cursor: string) => {
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip || selectedAspect == null) return
-    const center = centerClient(selectedClip.transform, selectedAspect)
+    if (!el || !selectedClip || !selectedSize) return
+    const center = centerClient(selectedClip.transform, selectedSize)
     if (!center) return
     onEditStart()
     gestureRef.current = {
@@ -347,6 +446,60 @@ export function PreviewStage({
     startGesture(el, e, cursor)
   }
 
+  /** Corner drag on a TEXT clip. Same distance-ratio geometry as `beginScale`,
+   *  but it commits `fontSize` — so `transform.scale` stays 1 and the inspector's
+   *  Size field remains the one number that says how big the text is. */
+  const beginFontScale = (e: React.PointerEvent, cursor: string) => {
+    e.stopPropagation()
+    if (!canBeginGesture(e)) return
+    const el = frameRef.current
+    if (!el || !selectedClip || !selectedSize) return
+    const center = centerClient(selectedClip.transform, selectedSize)
+    if (!center) return
+    const dist = Math.hypot(e.clientX - center.x, e.clientY - center.y)
+    if (dist <= 0) return
+    onEditStart()
+    gestureRef.current = {
+      kind: 'fontScale',
+      pointerId: e.pointerId,
+      clipId: selectedClip.id,
+      centerX: center.x,
+      centerY: center.y,
+      startDist: dist,
+      startFontSize: withTextDefaults(selectedClip.textStyle).fontSize,
+      start: selectedClip.transform,
+    }
+    startGesture(el, e, cursor)
+  }
+
+  /** Side-midpoint drag on a TEXT clip: sets the wrap width. */
+  const beginWrap = (
+    e: React.PointerEvent,
+    side: 'left' | 'right',
+    cursor: string,
+  ) => {
+    e.stopPropagation()
+    if (!canBeginGesture(e)) return
+    const el = frameRef.current
+    if (!el || !selectedClip || !selectedSize) return
+    const fr = el.getBoundingClientRect()
+    if (fr.width <= 0) return
+    onEditStart()
+    gestureRef.current = {
+      kind: 'wrap',
+      pointerId: e.pointerId,
+      clipId: selectedClip.id,
+      side,
+      startX: e.clientX,
+      startY: e.clientY,
+      rotationRad: (selectedClip.transform.rotationDeg * Math.PI) / 180,
+      frameW: fr.width,
+      startBoxWidth: withTextDefaults(selectedClip.textStyle).boxWidth,
+      start: selectedClip.transform,
+    }
+    startGesture(el, e, cursor)
+  }
+
   const beginCrop = (
     e: React.PointerEvent,
     edge: keyof CropInsets,
@@ -355,11 +508,12 @@ export function PreviewStage({
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip || selectedAspect == null) return
+    if (!el || !selectedClip || !selectedSize) return
     const fr = el.getBoundingClientRect()
-    const r = mediaRect(
+    const r = placeRect(
       selectedClip.transform,
-      selectedAspect,
+      selectedSize.w,
+      selectedSize.h,
       fr.width,
       fr.height,
     )
@@ -384,8 +538,8 @@ export function PreviewStage({
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip || selectedAspect == null) return
-    const center = centerClient(selectedClip.transform, selectedAspect)
+    if (!el || !selectedClip || !selectedSize) return
+    const center = centerClient(selectedClip.transform, selectedSize)
     if (!center) return
     onEditStart()
     gestureRef.current = {
@@ -406,14 +560,40 @@ export function PreviewStage({
     if (!canBeginGesture(e)) return
     const el = frameRef.current
     if (!el) return
-    // Hit-test the clips live at the playhead, topmost first.
+    // Hit-test the clips live at the playhead, topmost first. Because the
+    // overlay track is appended last, text is tested before the video under it.
     const st = useEditorStore.getState()
+    const fr = el.getBoundingClientRect()
     const live = resolveScene(st.project, st.currentTime)
     for (let i = live.length - 1; i >= 0; i--) {
       const clip = live[i].clip
-      const aspect = clipAspect(st.project, clip)
-      if (aspect == null) continue
-      if (hitTestClip(clip.transform, aspect, e.clientX, e.clientY)) {
+      const size = naturalSizeFor(clip, fr.width, fr.height)
+      if (!size) continue
+      if (hitTestClip(clip.transform, size, e.clientX, e.clientY)) {
+        // A second press on the same text clip, close in time and space, opens
+        // the inline editor instead of starting a drag — so no gesture begins
+        // and no undo snapshot is taken for what is really just a focus.
+        const last = lastTapRef.current
+        const now = e.timeStamp
+        if (
+          clip.type === 'text' &&
+          last &&
+          last.clipId === clip.id &&
+          now - last.t < 300 &&
+          Math.hypot(e.clientX - last.x, e.clientY - last.y) < 12
+        ) {
+          lastTapRef.current = null
+          selectClip(clip.id)
+          setEditingClipId(clip.id)
+          return
+        }
+        lastTapRef.current = {
+          clipId: clip.id,
+          t: now,
+          x: e.clientX,
+          y: e.clientY,
+        }
+
         selectClip(clip.id)
         onEditStart()
         gestureRef.current = {
@@ -428,6 +608,8 @@ export function PreviewStage({
         return
       }
     }
+    lastTapRef.current = null
+    setEditingClipId(null)
     selectClip(null)
   }
 
@@ -450,6 +632,32 @@ export function PreviewStage({
         const dist = Math.hypot(e.clientX - g.centerX, e.clientY - g.centerY)
         setClipTransform(g.clipId, applyScale(g.start, dist / g.startDist))
       }
+    } else if (g.kind === 'fontScale') {
+      const dist = Math.hypot(e.clientX - g.centerX, e.clientY - g.centerY)
+      // Every text metric is em-relative, so scaling the font size scales the
+      // whole block — the same visual result `transform.scale` would give, but
+      // expressed in the one number the inspector also edits.
+      const next = clampNumber(
+        (g.startFontSize * dist) / g.startDist,
+        MIN_FONT_SIZE,
+        MAX_FONT_SIZE,
+      )
+      patchTextStyle(g.clipId, { fontSize: next })
+    } else if (g.kind === 'wrap') {
+      // Project the drag onto the block's local x axis, as `crop` does.
+      const dx = e.clientX - g.startX
+      const dy = e.clientY - g.startY
+      const lx = dx * Math.cos(g.rotationRad) + dy * Math.sin(g.rotationRad)
+      // ×2 because the transform holds the CENTER fixed: dragging one edge out
+      // by `lx` widens the box by `lx` on both sides.
+      const delta = ((g.side === 'right' ? 1 : -1) * (2 * lx)) / g.frameW
+      patchTextStyle(g.clipId, {
+        boxWidth: clampNumber(
+          g.startBoxWidth + delta,
+          MIN_BOX_WIDTH,
+          MAX_BOX_WIDTH,
+        ),
+      })
     } else if (g.kind === 'crop') {
       // Project the pointer drag onto the media's own (rotated) axes, then turn
       // the on-edge component into an inset fraction of the full media dimension.
@@ -488,7 +696,9 @@ export function PreviewStage({
     releaseCapture(el, e.pointerId)
   }
 
-  const showChrome = selectedClip != null && !playing
+  // Handles are hidden while editing text, so they can't sit under the caret.
+  const showChrome =
+    selectedClip != null && !playing && editingClipId !== selectedClip.id
 
   return (
     <section
@@ -594,22 +804,26 @@ export function PreviewStage({
             }}
           >
             <div className="absolute inset-0 border-2 border-select" />
-            {HANDLES.map((h) => {
-              // Corners scale → round dot; trim edges → a small bar along the edge.
-              const shape = !h.edge
+            {(isText ? TEXT_HANDLES : MEDIA_HANDLES).map((h) => {
+              // Corner roles (scale/fontScale) → round dot; edge roles
+              // (crop/wrap) → a small bar lying along that edge.
+              const isCorner = h.role === 'scale' || h.role === 'fontScale'
+              const shape = isCorner
                 ? 'h-3.5 w-3.5 rounded-full'
                 : h.edge === 'top' || h.edge === 'bottom'
                   ? 'h-1.5 w-3 rounded-[2px]'
                   : 'h-3 w-1.5 rounded-[2px]'
               return (
                 <span
-                  key={`${h.x.toString()}-${h.y.toString()}`}
-                  onPointerDown={
-                    h.edge
-                      ? (e) =>
-                          beginCrop(e, h.edge as keyof CropInsets, h.cursor)
-                      : (e) => beginScale(e, h.cursor)
-                  }
+                  key={`${h.role}-${h.x.toString()}-${h.y.toString()}`}
+                  onPointerDown={(e) => {
+                    if (h.role === 'crop' && h.edge)
+                      beginCrop(e, h.edge, h.cursor)
+                    else if (h.role === 'wrap' && h.side)
+                      beginWrap(e, h.side, h.cursor)
+                    else if (h.role === 'fontScale') beginFontScale(e, h.cursor)
+                    else beginScale(e, h.cursor)
+                  }}
                   style={{
                     left: `${(h.x * 100).toString()}%`,
                     top: `${(h.y * 100).toString()}%`,
@@ -644,6 +858,21 @@ export function PreviewStage({
               <RotateCw className="h-3.5 w-3.5" />
             </button>
           </div>
+        )}
+
+        {/* Inline text editing. Positioned by the SAME rect as the chrome, with
+            transparent glyphs over the canvas-drawn text — so the thing being
+            edited is the thing that exports. */}
+        {editingClipId && rect && !playing && (
+          <CanvasTextEditor
+            clipId={editingClipId}
+            rect={rect}
+            frameH={frameSize.h}
+            onEditStart={onEditStart}
+            onClose={() => {
+              setEditingClipId(null)
+            }}
+          />
         )}
       </div>
 

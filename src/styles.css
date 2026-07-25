@@ -107,8 +107,10 @@
   :root {
     /* Fluid on HEIGHT, not width: a landscape phone (844×390) clears every
        width breakpoint and still has no vertical room. Floored so the ruler
-       (h-6) + one track lane (h-14) + the transport (h-11) always fit; capped
-       so a tall tablet doesn't hand the timeline half the screen. */
+       (sticky, h-6) + the FIRST track lane (h-14) + the transport (h-11) always
+       fit; capped so a tall tablet doesn't hand the timeline half the screen.
+       Additional lanes (the text overlay lane) do NOT grow this — they scroll
+       vertically inside it, which is why the floor stays where it is. */
     --timeline-h: clamp(9.5rem, 30dvh, 15rem);
     --rail-h: 3.5rem;
   }

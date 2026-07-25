@@ -4,15 +4,16 @@ Web version of the **captions-bro** iOS app. The iOS app burns karaoke-style
 captions into videos on-device (Apple Speech transcription → styled overlay →
 AVFoundation H.264 export). This is the browser port.
 
-**Current scope (MVP):** import a video **or image** → preview it on a 16:9
-canvas → export a re-encoded **H.264 + AAC MP4**, entirely client-side via
-WebCodecs. Images become fixed-length still-frame clips (like the iOS app's
-still→video). No transcription or caption rendering yet — the export pipeline is
-built first because caption burn-in plugs directly into it.
+**Current scope:** import a video **or image** → add styled **text overlays** →
+preview on a 16:9 canvas → export a re-encoded **H.264 + AAC MP4**, entirely
+client-side via WebCodecs. Images become fixed-length still-frame clips (like the
+iOS app's still→video). No transcription yet — but the burn-in it needs is done,
+so it only has to generate text clips (see "Text overlays").
 
-`export.ts` has two entry points: `exportVideo` (decode→encode a video via
-`Conversion`) and `exportImage` (encode a still onto a `CanvasSource` for a fixed
-duration). Both return the same `ExportHandle`.
+`export.ts` has three entry points: `exportVideo` (decode→encode a video via
+`Conversion`, compositing any text overlays in its per-frame hook), `exportImage`
+(encode a still onto a `CanvasSource` for a fixed duration) and `exportTimeline`
+(the multi-clip compositor). All return the same `ExportHandle`.
 
 ## Stack
 
@@ -20,7 +21,7 @@ duration). Both return the same `ExportHandle`.
 - **Tailwind CSS v4** (`@tailwindcss/vite`, tokens in `src/styles.css` via `@theme`)
 - **mediabunny** — in-browser demux/decode/encode over WebCodecs
 - **Zustand + immer** — the editor store (`src/store/`), sliced into
-  document/playback/selection/export; read with atomic selectors, read
+  document/playback/selection/export/ui; read with atomic selectors, read
   imperatively in rAF/async via `useEditorStore.getState()`
 - No backend logic, no database (persistence is client-side: localStorage +
   IndexedDB, planned in `src/lib/persistence/`)
@@ -31,7 +32,18 @@ duration). Both return the same `ExportHandle`.
   `MediaAsset` registry (`types.ts`), pure `factories.ts`/`selectors.ts`, and
   `scene.ts` (`resolveScene(project, t)` → the clips live at a time).
 - `src/lib/render/compositor.ts` — `drawScene`, the ONE renderer (see below).
-- `src/lib/transform.ts` — `mediaRect` placement math (shared geometry).
+- `src/lib/transform.ts` — placement math (shared geometry). `placeRect` is the
+  primitive: it places a source of a given NATURAL size (canvas px). `mediaRect`
+  is `placeRect ∘ containFit` — media contain-fits an aspect first; a laid-out
+  text block reports its measured size and goes straight to `placeRect`. Never
+  add a second placement path.
+- `src/lib/text/` — the text layer: `layout.ts` (PURE — wrap/measure/paint, takes
+  an injected `TextMeasurer` so it unit-tests in the node vitest env; don't inline
+  `ctx.measureText` into it), `measure.ts` (the lazy canvas measurer + caches),
+  `fonts.ts`/`fontLoader.ts` (the curated Google Fonts set, loaded on demand),
+  `presets.ts`. `src/lib/model/text.ts` holds the `TextStyle` value object.
+- `src/lib/render/textSource.ts` — `textSourceForClip`, the ONE text renderer,
+  shared by the preview and BOTH export paths.
 - `src/store/` — the Zustand store + slices.
 - `src/lib/render/mediaPool.ts` — the live `<video>`/`<img>` decode+audio elements
   the preview draws from; `usePlayback` slaves them to the timeline clock.
@@ -39,13 +51,16 @@ duration). Both return the same `ExportHandle`.
   (localStorage document JSON, blob-stripped); `usePersistence` hydrates + debounce-saves.
 - `src/hooks/` — orchestration: `usePlayback` (virtual-timeline clock),
   `useMediaImport` (append clip + store blob), `useExport`, `useEditorKeyboard`,
-  `useUndoRedo` (snapshot-based, over the document), `usePersistence`.
+  `useUndoRedo` (snapshot-based, over the document), `usePersistence`,
+  `useFontLoader` (keeps the document's faces loaded across reload/undo),
+  `useTextStyle` (per-field atomic selectors + rAF-throttled writes).
 - `src/components/editor/` — the store-connected shell (TopBar, MediaPanel,
   PreviewStage, Timeline, InspectorPanel, MobileDock, ExportScreen);
   `src/components/ui/` — shadcn primitives. `MediaPanel.tsx` exports three
   pieces — `MediaRail`, `MediaBin` and the desktop `MediaPanel` — so the same UI
   serves both layouts without a JS breakpoint fork; `MobileDock` composes the
-  first two below `lg`.
+  first two below `lg`. `inspector/InspectorBody` is shared the same way by the
+  desktop column and the mobile sheet.
 - `src/routes/index.tsx` — a thin shell that mounts the hooks and composes the
   shell; it holds no domain state.
 
@@ -55,8 +70,9 @@ duration). Both return the same `ExportHandle`.
 
 ### Export
 
-`src/lib/export.ts` → `exportProject(project)` picks the path: the fast
-single-source encoder for an untrimmed single clip, else `exportTimeline` — a
+`src/lib/export.ts` → `exportProject(project)` picks the path via the pure
+`planExport`: the fast single-source encoder for an untrimmed single clip (plus
+any number of text overlays), else `exportTimeline` — a
 frame-by-frame composite through `drawScene` using a `VideoSampleSink` per clip.
 Audio in the composite path is mixed from all clips with an `OfflineAudioContext`
 (scheduled by `start`/`trimIn`/`duration`/`volume`) and encoded as AAC where an
@@ -105,22 +121,80 @@ WYSIWYG is **structural**: there is a single renderer, `drawScene` in
 preview (`PreviewStage`) draws it onto a `<canvas>` on a rAF loop, using hidden
 `<video>`/`<img>` elements as decode + audio sources; the export (`export.ts`)
 calls the same `drawScene` per frame (mediabunny's `video.process` hook for
-video, `CanvasSource` for stills). Geometry comes from `mediaRect`
+video, `CanvasSource` for stills). Geometry comes from `placeRect`
 (`src/lib/transform.ts`); the output canvas is the project's `canvas`
 (`project.canvas`, 16:9). Because both paths call one function, a new visual
 feature is written once (as a `DrawItem`/layer) and cannot drift between preview
 and export. The selection box/handles are a DOM overlay positioned by the same
-`mediaRect` — chrome, never composited, so never exported.
+`placeRect` — chrome, never composited, so never exported.
+
+A `RenderSource` reports its size one of two ways, and the union's `never` arms
+make it a compile error to set both: `{ aspect }` (media — contain-fit to the
+canvas) or `{ size }` (a natural size already in the target canvas's pixels —
+text). Contain-fitting a text box would stretch it to fill the frame, which is
+why the second arm exists.
+
+**Text is resolution-independent by construction**, because the preview canvas is
+`clientWidth × DPR` while the export is 1920×1080. `TextStyle.fontSize` is a
+fraction of canvas HEIGHT, `boxWidth` a fraction of canvas WIDTH, and everything
+else (padding, radius, outline, shadow, tracking, line height) is in `em`. Never
+store a px value in a `TextStyle`. Two further traps, both encoded in `layout.ts`:
+
+- **Measure at `REF_FONT_PX`, never at the final size.** Font hinting makes
+  `measureText` non-linear in size, so measuring at the real size yields
+  DIFFERENT LINE BREAKS in a 400px preview and a 1080px export.
+  `layout.test.ts` asserts identical breaks across canvas sizes — that test is
+  the WYSIWYG guarantee.
+- **Canvas shadows are device-space.** `ctx.scale(k)` does NOT scale
+  `shadowBlur`/`shadowOffset*`; they are multiplied by `k` by hand. `lineWidth`
+  IS user-space and must not be. Get this wrong and the shadow is right in the
+  preview and wrong in the export.
 
 ### Upgrade paths
 
 - **Large outputs:** the export uses mediabunny's `BufferTarget`, which holds the
   whole result in RAM (~2 GB practical ceiling). For bigger files, swap to a
   `StreamTarget` writing to disk / OPFS. Public API of `export.ts` need not change.
-- **Caption burn-in (the reason this exists):** goes _inside_ `export.ts`, via
-  mediabunny's per-frame `video.process(sample) => CanvasImageSource` hook on the
-  `Conversion`. Draw the styled captions onto a canvas per timestamp and return it;
-  the rest of the pipeline (encode → MP4) is unchanged.
+
+- **Automatic captions:** the burn-in half is DONE (see "Text overlays" below) —
+  a caption is a text clip with a start and a duration. Transcription only has to
+  _generate_ those clips; rendering, styling, preview and export already work.
+
+### Text overlays
+
+The Text rail tab inserts a styled text clip at the playhead; the Inspector edits
+every property. Three structural rules:
+
+- **Overlay tracks are FREE-POSITIONED.** `repackTrack` (`documentSlice.ts`) lays
+  a track gapless from t=0 — the magnetic model, right for video and wrong for
+  captions, which sit at an arbitrary time and MAY overlap each other. The
+  `if (track.type === 'overlay') return` guard at the top of `repackTrack` is the
+  ONE place that distinction lives; it covers add/move/trim/duplicate at once.
+  The overlay track is created lazily on the first insert, appended LAST (draw
+  order is tracks order, so text lands on top) and pruned when its last clip goes.
+- **`fontSize` is the single authority for size; `transform.scale` stays 1 for
+  text.** The preview's corner handles write `fontSize`, not `scale`, so the
+  Inspector's Size field and the canvas can never disagree. Because every metric
+  is em-relative, scaling the font scales the whole block identically. Side
+  handles set `boxWidth` (the wrap width); text has no crop and no honest
+  vertical resize, so those handles don't exist for it.
+- **A text clip must not cost the fast export path.** `planExport` (pure, and
+  unit-tested in `export.test.ts`) partitions clips into text vs media, so a
+  single untrimmed video PLUS any number of captions still goes through
+  `exportVideo`, which burns them in via the `process(sample)` hook and keeps its
+  AAC **packet-copy**. Falling back to `exportTimeline` there would export silent
+  wherever there is no AAC encoder (Firefox). Fonts must be resolved BEFORE
+  `Conversion.init`, since that hook is synchronous and cannot await.
+
+Inline editing on the canvas is a real `<textarea>` with transparent glyphs over
+the canvas-drawn text — so what is edited is literally what exports. It must stay
+a textarea, not `contentEditable`: `useEditorKeyboard` and `useUndoRedo` already
+skip their global shortcuts for TEXTAREA targets, which is what stops Space,
+Delete and Cmd+Z fighting the editor.
+
+Google Fonts is the first runtime third-party fetch besides GA4 — a deliberate
+exception to "no backend". It degrades cleanly: a blocked or offline load
+resolves anyway and the family falls back to the system stack.
 
 ## Responsive & touch — the editor runs on phones
 
@@ -184,17 +258,28 @@ can't resolve that implicitly. `touch-action` is latched at gesture start from
 the hit-test chain, so a `touch-none` descendant _does_ stop the ancestor
 scroller panning.
 
-| Surface                  | Setting                               | Why                                                                                    |
-| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------- |
-| scroll viewport          | `overscroll-x-contain`                | a swipe must not chain out to an iOS back-navigation                                   |
-| scrub surface            | `[touch-action:pan-x_pinch-zoom]`     | native pan owns drags; pointerdown/up still fire, which is what makes tap-to-seek work |
-| `ClipBox` root           | `selected ? touch-none : touch-pan-x` | unselected clips stay scroll-transparent so a long timeline is pannable anywhere       |
-| trim bars, preview frame | `touch-none`                          | they own their gesture outright                                                        |
+| Surface                  | Setting                                 | Why                                                                                    |
+| ------------------------ | --------------------------------------- | -------------------------------------------------------------------------------------- |
+| scroll viewport          | `overscroll-contain`                    | a swipe must not chain out to an iOS back-navigation                                   |
+| scrub surface            | `[touch-action:pan-x_pan-y_pinch-zoom]` | native pan owns drags; pointerdown/up still fire, which is what makes tap-to-seek work |
+| `ClipBox` root           | `selected ? touch-none : [pan-x_pan-y]` | unselected clips stay scroll-transparent so a long timeline is pannable anywhere       |
+| trim bars, preview frame | `touch-none`                            | they own their gesture outright                                                        |
+| slider root              | `touch-none`                            | same — a drag on it is never a scroll                                                  |
+| canvas text editor       | `touch-auto`                            | a tap must place the caret inside the otherwise `touch-none` frame                     |
+| popover content          | `overscroll-contain`                    | the font list's scroll must not chain out to the mobile sheet                          |
+
+Both timeline axes pan because a second lane (the text overlay) can exist: rather
+than growing `--timeline-h`, extra lanes **scroll vertically inside the fixed
+height**, with the ruler `sticky top-0` and the playhead knob riding it so it
+stays grabbable at any scroll offset. Raising the height floor instead would
+leave a landscape phone ~90px of preview, which is what `styles.css` guards.
 
 **The interaction model** (CapCut/iMovie, and the only resolution that doesn't
 sacrifice one of the two gestures): _tap the ruler to seek, drag the playhead
 knob to scrub precisely, tap a clip to select then drag it to reorder._ Desktop
-drag-scrub is unchanged — the scrub handler branches on `pointerType`.
+drag-scrub is unchanged — the scrub handler branches on `pointerType`. On the
+overlay lane a drag sets an absolute time (snapped to nearby clip edges and the
+playhead) rather than an index — there are no slots to reorder into.
 
 ### Pointer gestures are exclusive and cancel-safe
 
@@ -243,8 +328,19 @@ iPad + trackpad).
   _its_ track — which is why the Timeline transport carries `col-start-2`.
 - Tooltips are hover/focus-only (Radix ignores touch by design). Any label that
   carries information available nowhere else must live in the control itself —
-  e.g. the "SOON" badge on the inert rail items, and the always-visible export
-  capability badge.
+  e.g. the "SOON" badge on the inert rail items, the `role="tab"`/`aria-selected`
+  on the rail, and the always-visible export capability badge.
+- **A continuous edit must not re-render the timeline, and must not spam undo.**
+  immer hands out a new `project` on every mutation, and both `Timeline` and
+  `PreviewStage` subscribe to it wholesale — so a slider drag would otherwise
+  re-render every `ClipBox` at 60fps. Three defences, and all three are load-
+  bearing: `ClipBox` is `memo`'d (which needs every handler prop to be a stable
+  `useCallback`, hence `selectClipAt` reading `currentTime` via `getState()`
+  rather than closing over it); inspector controls subscribe per-FIELD through
+  `useTextStyleField`; and writes are rAF-throttled. Undo takes ONE snapshot per
+  editing session — first `set` of a drag, reset on commit/blur — never per
+  frame or keystroke. `usePersistence`'s 300ms debounce already collapses a whole
+  drag into a single save; don't "optimise" it.
 
 ### Known mobile limitations (deliberate, not oversights)
 
@@ -262,6 +358,13 @@ iPad + trackpad).
   tabs far below the ~2 GB desktop ceiling. See the `StreamTarget`/OPFS upgrade
   path above. A screen wake lock is held during export to reduce the odds of the
   tab being discarded.
+- **The software keyboard can cover the inline text editor.** Double-tap-to-edit
+  on the canvas is the FAST path; the Inspector's Content field (reachable from
+  the timeline's contextual Edit button) is the reliable one. Both write through
+  the same store action, so they cannot diverge.
+- **No per-line caption backgrounds** (the Instagram look) — the background box
+  wraps the whole block. Per-line boxes need the layout to emit one rect per
+  line, which is a feature, not a fix.
 
 ## Conventions
 

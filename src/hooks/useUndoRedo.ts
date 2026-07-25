@@ -36,7 +36,10 @@ export function useUndoRedo() {
     if (stack.length === 0) return
     const prev = stack[stack.length - 1]
     undoStack.current = stack.slice(0, -1)
-    redoStack.current = [...redoStack.current, useEditorStore.getState().project]
+    redoStack.current = [
+      ...redoStack.current,
+      useEditorStore.getState().project,
+    ]
     useEditorStore.getState().replaceProject(prev)
     setCanUndo(undoStack.current.length > 0)
     setCanRedo(true)
@@ -47,7 +50,10 @@ export function useUndoRedo() {
     if (stack.length === 0) return
     const next = stack[stack.length - 1]
     redoStack.current = stack.slice(0, -1)
-    undoStack.current = [...undoStack.current, useEditorStore.getState().project]
+    undoStack.current = [
+      ...undoStack.current,
+      useEditorStore.getState().project,
+    ]
     useEditorStore.getState().replaceProject(next)
     setCanUndo(true)
     setCanRedo(redoStack.current.length > 0)
@@ -64,8 +70,14 @@ export function useUndoRedo() {
   // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      const target = e.target as HTMLElement
+      const tag = target.tagName
+      // `isContentEditable` too: a rich-text surface owns Cmd+Z for its own
+      // text history, and stealing it would undo a whole document edit instead
+      // of the last few characters.
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) redo()

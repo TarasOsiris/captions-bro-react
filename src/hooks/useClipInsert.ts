@@ -15,7 +15,10 @@
 import { useCallback } from 'react'
 import { useEditorStore } from '@/store/editorStore'
 import { insertionIndex, videoTrack } from '@/lib/model/selectors'
-import { clipFromAsset } from '@/lib/model/factories'
+import { clipFromAsset, createTextClip } from '@/lib/model/factories'
+import { presetStyle } from '@/lib/text/presets'
+import { ensureFontsForClips } from '@/lib/text/fontLoader'
+import type { TextPreset } from '@/lib/text/presets'
 
 export function useClipInsert() {
   /** Insert a copy of `assetId` at the boundary nearest `time` (seconds).
@@ -36,5 +39,28 @@ export function useClipInsert() {
     [],
   )
 
-  return { insertAssetAtTime }
+  /** Insert a new text clip at `time` on the (lazily created) overlay track.
+   *  APPENDED, never index-packed — overlay clips are free-positioned and may
+   *  overlap, so there is no insertion slot to compute. Returns the new id. */
+  const insertTextAtTime = useCallback(
+    (preset: TextPreset, time: number, content?: string): string => {
+      const st = useEditorStore.getState()
+      const trackId = st.ensureOverlayTrack()
+      const clip = createTextClip({
+        start: time,
+        content,
+        style: presetStyle(preset),
+      })
+      st.addClip(clip, trackId)
+      st.selectClip(clip.id)
+      st.resetExport()
+      // Fire-and-forget: the preview redraws every frame, so the text simply
+      // sharpens from the fallback stack to the real face when it lands.
+      void ensureFontsForClips([clip])
+      return clip.id
+    },
+    [],
+  )
+
+  return { insertAssetAtTime, insertTextAtTime }
 }

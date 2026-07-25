@@ -8,6 +8,7 @@ import { useEditorStore } from '@/store/editorStore'
 import { getAssetBlob } from '@/lib/persistence/assetStore'
 import { loadStoredProject, saveProject } from '@/lib/persistence/projectStore'
 import { generateFilmstrip } from '@/lib/thumbs'
+import { withTextDefaults } from '@/lib/model/text'
 import type { MediaAsset, Project } from '@/lib/model/types'
 import type { StoredProject } from '@/lib/persistence/projectStore'
 
@@ -40,10 +41,18 @@ async function hydrate(stored: StoredProject): Promise<Project | null> {
       thumbs: sa.kind === 'image' ? [url] : [],
     }
   }
-  // Drop clips whose media couldn't be restored.
+  // Drop clips whose media couldn't be restored (asset-less clips like text are
+  // always kept), and normalize every text style so a document written by an
+  // older build can never hand `undefined` to the layout engine.
   const tracks = stored.tracks.map((t) => ({
     ...t,
-    clips: t.clips.filter((c) => c.assetId == null || !missing.has(c.assetId)),
+    clips: t.clips
+      .filter((c) => c.assetId == null || !missing.has(c.assetId))
+      .map((c) =>
+        c.type === 'text'
+          ? { ...c, textStyle: withTextDefaults(c.textStyle) }
+          : c,
+      ),
   }))
   if (stored.assets.length > 0 && Object.keys(assets).length === 0) return null
   return {

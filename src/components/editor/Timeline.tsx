@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,7 +8,9 @@ import {
   Scissors,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Trash2,
+  Type,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -24,6 +26,8 @@ import {
   projectDuration,
   resolveTrim,
   revealTime,
+  snapTargets,
+  snapTime,
   videoTrack,
 } from '@/lib/model/selectors'
 import { useClipInsert } from '@/hooks/useClipInsert'
@@ -50,6 +54,8 @@ const RULER_FALLBACK_SEC = 30
 const DRAG_THRESHOLD = 4
 /** Shortest a clip can be trimmed to (s), so a trimmed clip stays grabbable. */
 const MIN_CLIP_DURATION = 0.1
+/** How close (px) a dragged overlay clip must get to an edge before it snaps. */
+const SNAP_PX = 8
 
 /** X (px) of the boundary before `index` on a packed track — where an inserted/
  *  moved clip's left edge will land. Mirrors the clip-left math in ClipBox. */
@@ -68,7 +74,15 @@ function tickStep(): number {
   return 1800
 }
 
-function ClipBox({
+/**
+ * Memoized on purpose. immer hands out a NEW `project` object on every document
+ * mutation, and Timeline subscribes to it wholesale — so without this, dragging
+ * an inspector slider (or a preview handle) re-renders every clip on the
+ * timeline at 60fps. `clip` and `track` keep their identity under immer unless
+ * that clip actually changed, and every handler prop above is a stable
+ * `useCallback`, so this memo genuinely holds.
+ */
+const ClipBox = memo(function ClipBox({
   clip,
   track,
   selected,
@@ -132,12 +146,13 @@ function ClipBox({
           ? `translateX(${dragOffsetX.toFixed(2)}px)`
           : undefined,
       }}
-      // Touch model: an UNSELECTED clip is scroll-transparent (`touch-pan-x`),
-      // so a finger landing anywhere can still pan a long timeline. Selecting it
-      // claims the gesture (`touch-none`) and the next drag repositions it —
-      // tap-to-select-then-drag, the same precedence the trim bars already use.
+      // Touch model: an UNSELECTED clip is scroll-transparent (`pan-x pan-y`),
+      // so a finger landing anywhere can still pan a long timeline OR reach a
+      // lower lane. Selecting it claims the gesture (`touch-none`) and the next
+      // drag repositions it — tap-to-select-then-drag, the same precedence the
+      // trim bars already use.
       className={`absolute inset-y-0 select-none [-webkit-touch-callout:none] ${
-        selected ? 'touch-none' : 'touch-pan-x'
+        selected ? 'touch-none' : '[touch-action:pan-x_pan-y]'
       } ${dragging ? 'z-30 cursor-grabbing' : 'cursor-grab'}`}
     >
       <div
@@ -169,12 +184,23 @@ function ClipBox({
               )
             })}
           </div>
+        ) : clip.type === 'text' ? (
+          // Text has no filmstrip; an accent-tinted chip distinguishes the
+          // overlay lane at a glance.
+          <div className="flex h-full w-full items-center gap-1 bg-linear-to-r from-accent/30 via-accent/15 to-accent/30 px-1.5">
+            <Type className="h-3 w-3 shrink-0 text-accent" />
+            <span className="truncate text-[10px] font-medium text-ink/90">
+              {label}
+            </span>
+          </div>
         ) : (
           <div className="h-full w-full bg-linear-to-r from-raised via-edge/50 to-raised" />
         )}
-        <span className="absolute bottom-1 left-1.5 max-w-[80%] truncate rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white/90">
-          {label}
-        </span>
+        {clip.type !== 'text' && (
+          <span className="absolute bottom-1 left-1.5 max-w-[80%] truncate rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white/90">
+            {label}
+          </span>
+        )}
       </div>
 
       {selected && (
@@ -221,7 +247,7 @@ function ClipBox({
       )}
     </div>
   )
-}
+})
 
 export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const project = useEditorStore((s) => s.project)
@@ -233,6 +259,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const duplicateClip = useEditorStore((s) => s.duplicateClip)
   const removeClip = useEditorStore((s) => s.removeClip)
   const moveClipToIndex = useEditorStore((s) => s.moveClipToIndex)
+  const setClipStart = useEditorStore((s) => s.setClipStart)
+  const setPanel = useEditorStore((s) => s.setPanel)
   const trimClip = useEditorStore((s) => s.trimClip)
   const { insertAssetAtTime } = useClipInsert()
 
@@ -313,31 +341,46 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     onSeek(clamp(t, 0, total))
   }
 
-  const selectClipAt = (clip: Clip) => {
-    selectClip(clip.id)
-    // Bring the playhead onto the clip so the preview shows it.
-    const reveal = revealTime(clip, currentTime)
-    if (reveal != null) onSeek(reveal)
-  }
+  const selectClipAt = useCallback(
+    (clip: Clip) => {
+      selectClip(clip.id)
+      // Bring the playhead onto the clip so the preview shows it. Read the
+      // playhead IMPERATIVELY: closing over `currentTime` would give this a new
+      // identity on every frame of playback, which defeats the memoized ClipBox
+      // below and re-renders every clip 60x/s.
+      const reveal = revealTime(clip, useEditorStore.getState().currentTime)
+      if (reveal != null) onSeek(reveal)
+    },
+    [selectClip, onSeek],
+  )
 
   /** clientX → timeline seconds (clamped ≥0), accounting for scroll + inset. */
-  const clientXToTime = (clientX: number) => {
+  const clientXToTime = useCallback((clientX: number) => {
     const el = scrubRef.current
     if (!el) return 0
     const rect = el.getBoundingClientRect()
     return Math.max(0, (clientX - rect.left - TRACK_PAD) / TIMELINE_PX_PER_SEC)
-  }
+  }, [])
 
   // The drop target for panel media (packed model per-track).
   const dropTrack = videoTrack(project)
 
+  /** Lanes worth drawing: always the video track, plus any overlay track that
+   *  actually holds something. */
+  const visibleTracks = project.tracks.filter(
+    (t) => t.type !== 'overlay' || t.clips.length > 0,
+  )
+
   /** True while any timeline gesture owns a pointer — gestures are exclusive,
    *  so a second finger can't corrupt the one in flight. */
-  const gestureBusy = () =>
-    clipDragRef.current != null ||
-    trimDragRef.current != null ||
-    scrubDragRef.current != null ||
-    playheadDragRef.current != null
+  const gestureBusy = useCallback(
+    () =>
+      clipDragRef.current != null ||
+      trimDragRef.current != null ||
+      scrubDragRef.current != null ||
+      playheadDragRef.current != null,
+    [],
+  )
 
   // --- Drag the playhead knob (works identically on mouse and touch) ---
   const onPlayheadPointerDown = (e: React.PointerEvent) => {
@@ -361,130 +404,165 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
   /** Tear down a clip-reposition gesture: release capture and clear both the
    *  imperative ref and the render state. Shared by up and cancel. */
-  const releaseClipDrag = (el: Element, pointerId: number) => {
+  const releaseClipDrag = useCallback((el: Element, pointerId: number) => {
     releaseCapture(el, pointerId)
     clipDragRef.current = null
     setClipDrag(null)
     setDropIndicatorX(null)
-  }
+  }, [])
 
   // --- Reposition a clip already on the timeline (pointer-capture gesture) ---
-  const onClipPointerDown = (
-    clip: Clip,
-    _track: Track,
-    e: React.PointerEvent,
-  ) => {
-    if (!isPrimaryPointer(e) || gestureBusy()) return
-    // Don't let the press reach the scrub handler (which seeks + deselects).
-    e.stopPropagation()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    clipDragRef.current = {
-      pointerId: e.pointerId,
-      clipId: clip.id,
-      startClientX: e.clientX,
-      moved: false,
-    }
-    selectClipAt(clip)
-  }
+  const onClipPointerDown = useCallback(
+    (clip: Clip, _track: Track, e: React.PointerEvent) => {
+      if (!isPrimaryPointer(e) || gestureBusy()) return
+      // Don't let the press reach the scrub handler (which seeks + deselects).
+      e.stopPropagation()
+      e.currentTarget.setPointerCapture(e.pointerId)
+      clipDragRef.current = {
+        pointerId: e.pointerId,
+        clipId: clip.id,
+        startClientX: e.clientX,
+        moved: false,
+      }
+      selectClipAt(clip)
+    },
+    [gestureBusy, selectClipAt],
+  )
 
-  const onClipPointerMove = (
-    clip: Clip,
-    track: Track,
-    e: React.PointerEvent,
-  ) => {
-    const d = clipDragRef.current
-    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-    const dx = e.clientX - d.startClientX
-    if (!d.moved) {
-      if (Math.abs(dx) < DRAG_THRESHOLD) return
-      d.moved = true
-    }
-    const others = track.clips.filter((c) => c.id !== clip.id)
-    const index = insertionIndex(track.clips, clientXToTime(e.clientX), clip.id)
-    setDropIndicatorX(boundaryX(others, index))
-    setClipDrag({ clipId: clip.id, offsetX: dx })
-  }
+  const onClipPointerMove = useCallback(
+    (clip: Clip, track: Track, e: React.PointerEvent) => {
+      const d = clipDragRef.current
+      if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+      const dx = e.clientX - d.startClientX
+      if (!d.moved) {
+        if (Math.abs(dx) < DRAG_THRESHOLD) return
+        d.moved = true
+      }
+      // A free-positioned lane has no slots to drop into, so there is no magnetic
+      // caret to show — the clip simply follows the finger.
+      if (track.type !== 'overlay') {
+        const others = track.clips.filter((c) => c.id !== clip.id)
+        const index = insertionIndex(
+          track.clips,
+          clientXToTime(e.clientX),
+          clip.id,
+        )
+        setDropIndicatorX(boundaryX(others, index))
+      }
+      setClipDrag({ clipId: clip.id, offsetX: dx })
+    },
+    [clientXToTime],
+  )
 
-  const onClipPointerUp = (clip: Clip, track: Track, e: React.PointerEvent) => {
-    const d = clipDragRef.current
-    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-    releaseClipDrag(e.currentTarget, e.pointerId)
-    if (!d.moved) return
-    const index = insertionIndex(track.clips, clientXToTime(e.clientX), clip.id)
-    // Snapshot immediately before the (single) mutation, not when the drag
-    // crosses the threshold — so an abandoned drag leaves no undo entry.
-    onEditStart()
-    moveClipToIndex(clip.id, index)
-  }
+  const onClipPointerUp = useCallback(
+    (clip: Clip, track: Track, e: React.PointerEvent) => {
+      const d = clipDragRef.current
+      if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+      releaseClipDrag(e.currentTarget, e.pointerId)
+      if (!d.moved) return
+      // Snapshot immediately before the (single) mutation, not when the drag
+      // crosses the threshold — so an abandoned drag leaves no undo entry.
+      if (track.type === 'overlay') {
+        // Free positioning: commit an absolute time, snapped to nearby edges so
+        // captions land flush against cuts without pixel-hunting.
+        const dx = e.clientX - d.startClientX
+        const raw = Math.max(0, clip.start + dx / TIMELINE_PX_PER_SEC)
+        const st = useEditorStore.getState()
+        const snapped = snapTime(
+          raw,
+          snapTargets(st.project, st.currentTime, clip.id),
+          SNAP_PX / TIMELINE_PX_PER_SEC,
+        )
+        onEditStart()
+        setClipStart(clip.id, snapped)
+        return
+      }
+      const index = insertionIndex(
+        track.clips,
+        clientXToTime(e.clientX),
+        clip.id,
+      )
+      onEditStart()
+      moveClipToIndex(clip.id, index)
+    },
+    [
+      releaseClipDrag,
+      onEditStart,
+      setClipStart,
+      moveClipToIndex,
+      clientXToTime,
+    ],
+  )
 
   /** The browser took the gesture (native pan, OS interrupt). Drop it silently:
    *  no reorder, and — because the snapshot happens at the commit point — no
    *  stray undo entry either. */
-  const onClipPointerCancel = (
-    clip: Clip,
-    _track: Track,
-    e: React.PointerEvent,
-  ) => {
-    const d = clipDragRef.current
-    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-    releaseClipDrag(e.currentTarget, e.pointerId)
-  }
+  const onClipPointerCancel = useCallback(
+    (clip: Clip, _track: Track, e: React.PointerEvent) => {
+      const d = clipDragRef.current
+      if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+      releaseClipDrag(e.currentTarget, e.pointerId)
+    },
+    [releaseClipDrag],
+  )
 
   // --- Trim a clip by dragging its left/right edge handle (gapless ripple) ---
-  const onTrimPointerDown = (
-    clip: Clip,
-    edge: 'left' | 'right',
-    e: React.PointerEvent,
-  ) => {
-    if (!isPrimaryPointer(e) || gestureBusy()) return
-    // Keep the press off the clip-move / scrub handlers below it.
-    e.stopPropagation()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    trimDragRef.current = {
-      pointerId: e.pointerId,
-      clipId: clip.id,
-      edge,
-      startClientX: e.clientX,
-      origStart: clip.start,
-      origTrimIn: clip.trimIn,
-      origDuration: clip.duration,
-      snapshotted: false,
-    }
-  }
+  const onTrimPointerDown = useCallback(
+    (clip: Clip, edge: 'left' | 'right', e: React.PointerEvent) => {
+      if (!isPrimaryPointer(e) || gestureBusy()) return
+      // Keep the press off the clip-move / scrub handlers below it.
+      e.stopPropagation()
+      e.currentTarget.setPointerCapture(e.pointerId)
+      trimDragRef.current = {
+        pointerId: e.pointerId,
+        clipId: clip.id,
+        edge,
+        startClientX: e.clientX,
+        origStart: clip.start,
+        origTrimIn: clip.trimIn,
+        origDuration: clip.duration,
+        snapshotted: false,
+      }
+    },
+    [gestureBusy],
+  )
 
-  const onTrimPointerMove = (clip: Clip, e: React.PointerEvent) => {
-    const d = trimDragRef.current
-    if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-    const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
-    if (!d.snapshotted) {
-      if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
-      d.snapshotted = true
-      onEditStart() // one undo snapshot for the whole gesture
-    }
-    // A still image has no source timeline; video is bounded by its intrinsic length.
-    const asset = assetOf(useEditorStore.getState().project, clip)
-    const sourceLen =
-      clip.type === 'video'
-        ? (asset?.durationSec ?? Number.POSITIVE_INFINITY)
-        : Number.POSITIVE_INFINITY
-    const { trimIn, duration } = resolveTrim(
-      d.edge,
-      { trimIn: d.origTrimIn, duration: d.origDuration },
-      deltaSec,
-      sourceLen,
-      MIN_CLIP_DURATION,
-    )
-    trimClip(clip.id, trimIn, duration)
-  }
+  const onTrimPointerMove = useCallback(
+    (clip: Clip, e: React.PointerEvent) => {
+      const d = trimDragRef.current
+      if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
+      const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
+      if (!d.snapshotted) {
+        if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
+        d.snapshotted = true
+        onEditStart() // one undo snapshot for the whole gesture
+      }
+      // A still image has no source timeline; video is bounded by its intrinsic length.
+      const asset = assetOf(useEditorStore.getState().project, clip)
+      const sourceLen =
+        clip.type === 'video'
+          ? (asset?.durationSec ?? Number.POSITIVE_INFINITY)
+          : Number.POSITIVE_INFINITY
+      const { trimIn, duration } = resolveTrim(
+        d.edge,
+        { trimIn: d.origTrimIn, duration: d.origDuration },
+        deltaSec,
+        sourceLen,
+        MIN_CLIP_DURATION,
+      )
+      trimClip(clip.id, trimIn, duration)
+    },
+    [onEditStart, trimClip],
+  )
 
   // Shared by up AND cancel: the trim is applied live on every move, so ending
   // the gesture is the correct response either way — there is nothing to commit.
-  const onTrimPointerUp = (clip: Clip, e: React.PointerEvent) => {
+  const onTrimPointerUp = useCallback((clip: Clip, e: React.PointerEvent) => {
     const d = trimDragRef.current
     if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
     releaseCapture(e.currentTarget, e.pointerId)
     trimDragRef.current = null
-  }
+  }, [])
 
   // --- Drop a media item from the panel onto the timeline (HTML5 DnD) ---
   const isMediaDrag = (e: React.DragEvent) =>
@@ -695,9 +773,12 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
       <div
         ref={viewportRef}
-        // `overscroll-x-contain` keeps a horizontal swipe here from chaining out
-        // to the document — iOS otherwise reads it as a back-navigation.
-        className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain pb-2 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-1.5"
+        // Scrolls on BOTH axes now that a second lane can exist: rather than
+        // growing --timeline-h (which on a landscape phone would leave the
+        // preview ~90px tall), extra lanes scroll inside the fixed height.
+        // `overscroll-contain` keeps a swipe from chaining out to the document —
+        // iOS otherwise reads a horizontal one as a back-navigation.
+        className="relative min-h-0 flex-1 overflow-auto overscroll-contain pb-2 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-1.5"
       >
         <div
           ref={scrubRef}
@@ -753,13 +834,17 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           onDragLeave={onTimelineDragLeave}
           onDrop={onTimelineDrop}
           style={{ width: `${trackWidth.toString()}px` }}
-          // `pan-x` hands horizontal touch drags to the parent scroller (so a
-          // long timeline is pannable) while still delivering pointerdown/up —
-          // which is what makes tap-to-seek work. `pinch-zoom` is kept so the
-          // page remains zoomable for accessibility.
-          className="relative h-full cursor-pointer select-none [touch-action:pan-x_pinch-zoom]"
+          // `pan-x pan-y` hands touch drags to the parent scroller (so a long
+          // timeline is pannable and extra lanes reachable) while still
+          // delivering pointerdown/up — which is what makes tap-to-seek work.
+          // `pinch-zoom` is kept so the page remains zoomable for accessibility.
+          className="relative cursor-pointer select-none [touch-action:pan-x_pan-y_pinch-zoom]"
         >
-          <div className="relative h-6">
+          {/* Sticky on the vertical axis only: the ticks still scroll sideways
+              with the content, but the time reference never scrolls away when
+              the lanes do. `scrubRef`'s left edge is unaffected, so
+              clientXToTime needs no change. */}
+          <div className="sticky top-0 z-20 h-6 bg-surface/95 backdrop-blur-sm">
             {ticks.map(({ t, major }) => {
               const left = `${(TRACK_PAD + t * TIMELINE_PX_PER_SEC).toFixed(2)}px`
               return major ? (
@@ -783,11 +868,42 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                 />
               )
             })}
+
+            {/* The knob is the grab target: a transparent 44×36 box around a
+                9px marker. `touch-none` claims the drag from the scroller, so
+                this is how you scrub precisely on touch. It rides the STICKY
+                ruler, so scrolling to a lower lane never puts it out of reach. */}
+            <span
+              role="slider"
+              tabIndex={0}
+              aria-label="Playhead"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(rulerDuration * 10) / 10}
+              aria-valuenow={Math.round(currentTime * 10) / 10}
+              onPointerDown={onPlayheadPointerDown}
+              onPointerMove={onPlayheadPointerMove}
+              onPointerUp={onPlayheadPointerUp}
+              onPointerCancel={onPlayheadPointerUp}
+              style={{ left: `${playheadX.toFixed(2)}px` }}
+              className="absolute top-0 z-30 flex h-9 w-11 -translate-x-1/2 cursor-ew-resize touch-none items-start justify-center"
+            >
+              <span className="h-3.5 w-[9px] rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
+            </span>
           </div>
 
           {hasClips ? (
-            project.tracks.map((track) => (
-              <div key={track.id} className="relative mt-2 h-14">
+            // An EMPTY overlay track never renders, so a project with no text
+            // costs exactly zero extra vertical space.
+            visibleTracks.map((track) => (
+              <div
+                key={track.id}
+                className={`relative mt-2 ${
+                  // A text chip carries a label, never a filmstrip, so the
+                  // overlay lane is compact — which is what keeps two lanes
+                  // inside the unchanged --timeline-h on a phone.
+                  track.type === 'overlay' ? 'h-9' : 'h-14'
+                }`}
+              >
                 {track.clips.map((clip) => (
                   <ClipBox
                     key={clip.id}
@@ -817,29 +933,15 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
             </div>
           )}
 
+          {/* The playhead LINE spans every lane and scrolls with them, which is
+              correct — it marks the same instant on each. The KNOB lives in the
+              sticky ruler above (see the ruler block), so it stays grabbable no
+              matter how far the lanes are scrolled. */}
           <div
             className="pointer-events-none absolute inset-y-0 z-10"
             style={{ left: `${playheadX.toFixed(2)}px` }}
           >
             <div className="absolute inset-y-0 left-1/2 top-1 w-[3px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.6)]" />
-            {/* The knob is the grab target: a transparent 44×36 box around a
-                9px marker. `touch-none` claims the drag from the scroller, so
-                this is how you scrub precisely on touch. */}
-            <span
-              role="slider"
-              tabIndex={0}
-              aria-label="Playhead"
-              aria-valuemin={0}
-              aria-valuemax={Math.round(rulerDuration * 10) / 10}
-              aria-valuenow={Math.round(currentTime * 10) / 10}
-              onPointerDown={onPlayheadPointerDown}
-              onPointerMove={onPlayheadPointerMove}
-              onPointerUp={onPlayheadPointerUp}
-              onPointerCancel={onPlayheadPointerUp}
-              className="pointer-events-auto absolute left-1/2 top-0 z-30 flex h-9 w-11 -translate-x-1/2 cursor-ew-resize touch-none items-start justify-center"
-            >
-              <span className="h-3.5 w-[9px] rounded-[2px] bg-white shadow-[0_1px_4px_rgba(0,0,0,0.6)]" />
-            </span>
           </div>
 
           {dropIndicatorX != null && (
@@ -869,6 +971,19 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
               <Icon className="h-4 w-4" />
             </Button>
           ))}
+          {/* Deliberately NOT in the shared `tools` array: at lg+ the inspector
+              column is already on screen, so this button would be a no-op there. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setPanel('inspector')
+            }}
+            aria-label="Edit properties"
+            className="h-9 w-9 rounded-full"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+          </Button>
         </div>
       )}
     </footer>

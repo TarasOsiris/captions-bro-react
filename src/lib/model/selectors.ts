@@ -36,6 +36,47 @@ export function videoTrack(project: Project): Track {
   return project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
 }
 
+/** The overlay (text) track, or null until one exists — it is created lazily on
+ *  the first text insert and pruned when its last clip goes. Sibling of
+ *  `videoTrack`: track routing lives here and nowhere else. */
+export function overlayTrack(project: Project): Track | null {
+  return project.tracks.find((t) => t.type === 'overlay') ?? null
+}
+
+/** Every edge a free-positioned clip can snap to: 0, the playhead, and both ends
+ *  of every other clip. Excludes `excludeId` so a clip never snaps to itself. */
+export function snapTargets(
+  project: Project,
+  playhead: number,
+  excludeId?: string,
+): number[] {
+  const targets = [0, playhead]
+  for (const clip of allClips(project)) {
+    if (clip.id === excludeId) continue
+    targets.push(clip.start, clip.start + clip.duration)
+  }
+  return targets
+}
+
+/** `t` pulled to the nearest target within `tolerance`, else left alone. Pure so
+ *  the overlay drag's snapping is unit-testable without a DOM. */
+export function snapTime(
+  t: number,
+  targets: number[],
+  tolerance: number,
+): number {
+  let best = t
+  let bestDist = tolerance
+  for (const target of targets) {
+    const dist = Math.abs(t - target)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = target
+    }
+  }
+  return best
+}
+
 /** Whether `clip` is on screen at time `t`. Inclusive at both ends, matching
  *  `resolveScene` — the one definition of the live window, so the compositor,
  *  the playback element sync and the selection UI can't disagree about a

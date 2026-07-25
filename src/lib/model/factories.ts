@@ -4,12 +4,14 @@
 import { DEFAULT_IMAGE_DURATION_SEC } from '@/lib/media'
 import { IDENTITY } from '@/lib/transform'
 import { uid } from './ids'
+import { DEFAULT_TEXT_CONTENT, withTextDefaults } from './text'
 import type {
   CanvasSettings,
   Clip,
   MediaAsset,
   MediaKind,
   Project,
+  TextStyle,
   Track,
 } from './types'
 
@@ -68,12 +70,45 @@ export function clipFromAsset(asset: MediaAsset, start = 0): Clip {
   }
 }
 
-/** A deep-ish copy of a clip with a fresh id (transform cloned so edits don't alias). */
+/** How long a freshly inserted text clip covers, matching the still-image default. */
+export const DEFAULT_TEXT_DURATION_SEC = 4
+
+/** A text clip: no asset, free-positioned at `start`, styled from the defaults. */
+export function createTextClip(opts?: {
+  start?: number
+  duration?: number
+  content?: string
+  style?: Partial<TextStyle>
+}): Clip {
+  return {
+    id: uid('clip'),
+    type: 'text',
+    assetId: null,
+    start: Math.max(0, opts?.start ?? 0),
+    duration: opts?.duration ?? DEFAULT_TEXT_DURATION_SEC,
+    trimIn: 0,
+    transform: { ...IDENTITY },
+    text: opts?.content ?? DEFAULT_TEXT_CONTENT,
+    textStyle: withTextDefaults(opts?.style),
+  }
+}
+
+/**
+ * A copy of a clip with a fresh id. Every NESTED value object is copied
+ * explicitly: a shared reference would let an edit to the copy reach the
+ * original. immer masks this today (its drafts are copy-on-write per object),
+ * which is exactly why it must be spelled out — the next non-store caller would
+ * hit it silently.
+ */
 export function cloneClip(clip: Clip, overrides: Partial<Clip> = {}): Clip {
   return {
     ...clip,
     id: uid('clip'),
-    transform: { ...clip.transform },
+    transform: {
+      ...clip.transform,
+      ...(clip.transform.crop && { crop: { ...clip.transform.crop } }),
+    },
+    ...(clip.textStyle && { textStyle: { ...clip.textStyle } }),
     ...overrides,
   }
 }

@@ -10,14 +10,25 @@
 // `sample.draw(ctx, …)` in video export, `ctx.drawImage(bitmap, …)` in image
 // export — the geometry (via `mediaRect`) is identical in every case.
 
-import { mediaRect } from '@/lib/transform'
+import { mediaRect, placeRect } from '@/lib/transform'
 import type { CanvasSettings, Transform } from '@/lib/model/types'
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
-export interface RenderSource {
-  /** Source aspect ratio (width / height). */
-  aspect: number
+/**
+ * How a source reports its size at `scale === 1`. Exactly one of the two — the
+ * `never` arms make that a compile-time guarantee rather than a convention, so
+ * no call site can set both and leave the reader guessing which one wins.
+ */
+type SourceExtent =
+  /** An intrinsic aspect ratio, CONTAIN-FIT to the canvas. Every media source. */
+  | { aspect: number; size?: never }
+  /** A natural size already in the PIXEL UNITS OF THE CANVAS being drawn into —
+   *  for sources with no intrinsic aspect (a laid-out text block). Contain-fitting
+   *  one of these would blow it up to fill the canvas, hence the second arm. */
+  | { size: { w: number; h: number }; aspect?: never }
+
+export type RenderSource = SourceExtent & {
   /** Paint the source filling the given destination rect (canvas already
    *  translated to the media center and rotated). */
   paint: (ctx: Ctx, dx: number, dy: number, dw: number, dh: number) => void
@@ -41,12 +52,21 @@ export function drawScene(
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   for (const item of items) {
     if (!item.source) continue
-    const rect = mediaRect(
-      item.transform,
-      item.source.aspect,
-      canvas.width,
-      canvas.height,
-    )
+    // Both arms end in `placeRect`; media just contain-fits its aspect first.
+    const rect = item.source.size
+      ? placeRect(
+          item.transform,
+          item.source.size.w,
+          item.source.size.h,
+          canvas.width,
+          canvas.height,
+        )
+      : mediaRect(
+          item.transform,
+          item.source.aspect,
+          canvas.width,
+          canvas.height,
+        )
     ctx.save()
     ctx.translate(rect.cx, rect.cy)
     if (rect.rotationDeg) ctx.rotate((rect.rotationDeg * Math.PI) / 180)

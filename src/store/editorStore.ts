@@ -10,15 +10,18 @@ import { createDocumentSlice } from './documentSlice'
 import { createPlaybackSlice } from './playbackSlice'
 import { createSelectionSlice } from './selectionSlice'
 import { createExportSlice } from './exportSlice'
+import { createUiSlice } from './uiSlice'
 import type { DocumentSlice } from './documentSlice'
 import type { PlaybackSlice } from './playbackSlice'
 import type { SelectionSlice } from './selectionSlice'
 import type { ExportSlice } from './exportSlice'
+import type { UiSlice } from './uiSlice'
 
 export type EditorState = DocumentSlice &
   PlaybackSlice &
   SelectionSlice &
-  ExportSlice
+  ExportSlice &
+  UiSlice
 
 /** Slice-creator type bound to the immer middleware. Each slice is `(set,get)=>{…}`. */
 export type ImmerSlice<T> = StateCreator<
@@ -34,5 +37,6 @@ export const useEditorStore = create<EditorState>()(
     ...createPlaybackSlice(...a),
     ...createSelectionSlice(...a),
     ...createExportSlice(...a),
+    ...createUiSlice(...a),
   })),
 )

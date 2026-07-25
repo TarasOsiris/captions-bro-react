@@ -73,8 +73,12 @@ export interface MediaRect {
  * The object-contain fit of `mediaAspect` into a `canvasW×canvasH` box: the
  * largest centered rectangle of that aspect that fits, matching CSS
  * `object-contain`.
+ *
+ * Exported because a source that reports a NATURAL size instead of an aspect
+ * (a laid-out text block) skips this step and goes straight to `placeRect` —
+ * contain-fitting a text box would blow it up to fill the canvas.
  */
-function containFit(
+export function containFit(
   mediaAspect: number,
   canvasW: number,
   canvasH: number,
@@ -89,11 +93,38 @@ function containFit(
 }
 
 /**
- * Where the media lands on a 16:9 canvas of the given pixel size, given the
- * transform. Consumed identically by preview and export.
+ * THE placement primitive: where a source of natural size `naturalW×naturalH`
+ * (canvas pixels, at `scale === 1`) lands on a canvas of the given pixel size.
  *
- * Canonical order (both consumers must match): scale about center → rotate about
+ * Canonical order (every consumer must match): scale about center → rotate about
  * center → translate.
+ *
+ * Two kinds of source feed this. Media has an intrinsic ASPECT and is
+ * contain-fitted first (see `mediaRect`); a text block measures its own natural
+ * SIZE and is placed directly. Both then share this one function, so preview and
+ * export can't disagree about placement for either.
+ */
+export function placeRect(
+  transform: Transform,
+  naturalW: number,
+  naturalH: number,
+  canvasW: number,
+  canvasH: number,
+): MediaRect {
+  return {
+    cx: canvasW / 2 + transform.tx * canvasW,
+    cy: canvasH / 2 + transform.ty * canvasH,
+    w: naturalW * transform.scale,
+    h: naturalH * transform.scale,
+    rotationDeg: transform.rotationDeg,
+    crop: cropInsets(transform),
+  }
+}
+
+/**
+ * Where the media lands on a 16:9 canvas of the given pixel size, given the
+ * transform. Consumed identically by preview and export. Contain-fit, then
+ * `placeRect`.
  */
 export function mediaRect(
   transform: Transform,
@@ -102,14 +133,7 @@ export function mediaRect(
   canvasH: number,
 ): MediaRect {
   const fit = containFit(mediaAspect, canvasW, canvasH)
-  return {
-    cx: canvasW / 2 + transform.tx * canvasW,
-    cy: canvasH / 2 + transform.ty * canvasH,
-    w: fit.w * transform.scale,
-    h: fit.h * transform.scale,
-    rotationDeg: transform.rotationDeg,
-    crop: cropInsets(transform),
-  }
+  return placeRect(transform, fit.w, fit.h, canvasW, canvasH)
 }
 
 /**

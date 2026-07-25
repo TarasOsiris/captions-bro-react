@@ -21,6 +21,9 @@ import type { Clip } from '@/lib/model/types'
 import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
+import { TextPresetBin } from '@/components/editor/TextPanel'
+import { DESKTOP_PANEL_ID } from '@/components/editor/panelIds'
+import type { Panel } from '@/store/uiSlice'
 
 interface MediaBinProps {
   onPickFile: () => void
@@ -37,12 +40,15 @@ function RailItem({
   label,
   active = false,
   orientation = 'vertical',
+  panelId,
   onClick,
 }: {
   icon: React.ReactNode
   label: string
   active?: boolean
   orientation?: 'vertical' | 'horizontal'
+  /** The tabpanel this item controls; omitted for the inert "soon" items. */
+  panelId?: string
   onClick?: () => void
 }) {
   const enabled = active || onClick != null
@@ -50,6 +56,11 @@ function RailItem({
   const button = (
     <Button
       variant="ghost"
+      // The rail IS the tablist. Tab state must live in the control itself —
+      // a tooltip can't carry it, since tooltips never open on touch.
+      role={enabled ? 'tab' : undefined}
+      aria-selected={enabled ? active : undefined}
+      aria-controls={enabled ? panelId : undefined}
       aria-disabled={!enabled}
       // The "coming soon" state used to live ONLY in a hover tooltip, which
       // never opens on touch — so these read as broken buttons on a phone. The
@@ -95,34 +106,50 @@ function RailItem({
   )
 }
 
+/** The rail's items. `id: null` marks one that isn't built yet — `RailItem`
+ *  derives its inert "Soon" state from the absence of a click handler, so there
+ *  is no separate disabled flag to keep in sync. */
+const RAIL_ITEMS: Array<{
+  id: Panel | null
+  icon: React.ReactNode
+  label: string
+}> = [
+  { id: 'media', icon: <Film className="h-5 w-5" />, label: 'Media' },
+  { id: 'text', icon: <Type className="h-5 w-5" />, label: 'Text' },
+  { id: null, icon: <Music className="h-5 w-5" />, label: 'Audio' },
+  { id: null, icon: <Captions className="h-5 w-5" />, label: 'Captions' },
+]
+
 export function MediaRail({
   orientation = 'vertical',
-  mediaActive = true,
-  onToggleMedia,
+  activeTab,
+  panelId,
+  onSelect,
 }: {
   orientation?: 'vertical' | 'horizontal'
-  /** Whether the Media panel is the one currently showing. */
-  mediaActive?: boolean
-  /** Mobile only — toggles the media sheet. Omitted on desktop (always open). */
-  onToggleMedia?: () => void
+  /** The panel currently showing, or null (mobile, everything closed). */
+  activeTab: Panel | null
+  /** The tabpanel these tabs control, for `aria-controls`. */
+  panelId: string
+  onSelect: (panel: Panel) => void
 }) {
-  const items = [
-    { icon: <Film className="h-5 w-5" />, label: 'Media' },
-    { icon: <Type className="h-5 w-5" />, label: 'Text' },
-    { icon: <Music className="h-5 w-5" />, label: 'Audio' },
-    { icon: <Captions className="h-5 w-5" />, label: 'Captions' },
-  ]
-
   return (
     <>
-      {items.map(({ icon, label }, i) => (
+      {RAIL_ITEMS.map(({ id, icon, label }) => (
         <RailItem
           key={label}
           icon={icon}
           label={label}
           orientation={orientation}
-          active={i === 0 && mediaActive}
-          onClick={i === 0 ? onToggleMedia : undefined}
+          panelId={panelId}
+          active={id != null && id === activeTab}
+          onClick={
+            id
+              ? () => {
+                  onSelect(id)
+                }
+              : undefined
+          }
         />
       ))}
     </>
@@ -295,16 +322,39 @@ export function MediaBin({
 }
 
 /** Desktop sidebar. Below `lg` the panels are dropped entirely and MobileDock
- *  takes over — see the layout notes in CLAUDE.md. */
-export function MediaPanel(props: MediaBinProps) {
+ *  takes over — see the layout notes in CLAUDE.md.
+ *
+ *  Reads `panel ?? 'media'`: the desktop bin has no closed state, so a null
+ *  panel (nothing opened yet, or the mobile sheet dismissed) still shows Media.
+ *  That one difference in how the SAME store value is read is what lets the two
+ *  layouts diverge without a JS breakpoint fork. */
+export function MediaPanel(props: MediaBinProps & { onEditStart: () => void }) {
+  const tab = useEditorStore((s) => s.panel) ?? 'media'
+  const setPanel = useEditorStore((s) => s.setPanel)
+  const { onEditStart, ...binProps } = props
+
   return (
     <aside className="hidden shrink-0 border-r border-edge bg-surface lg:flex">
-      <nav className="flex w-16 flex-col items-center gap-1 border-r border-edge/60 py-3">
-        <MediaRail orientation="vertical" />
+      <nav
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label="Editor panels"
+        className="flex w-16 flex-col items-center gap-1 border-r border-edge/60 py-3"
+      >
+        <MediaRail
+          orientation="vertical"
+          activeTab={tab}
+          panelId={DESKTOP_PANEL_ID}
+          onSelect={setPanel}
+        />
       </nav>
 
-      <div className="flex w-72 flex-col">
-        <MediaBin {...props} />
+      <div id={DESKTOP_PANEL_ID} role="tabpanel" className="flex w-72 flex-col">
+        {tab === 'text' ? (
+          <TextPresetBin onEditStart={onEditStart} />
+        ) : (
+          <MediaBin {...binProps} />
+        )}
       </div>
     </aside>
   )

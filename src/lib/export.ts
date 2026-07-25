@@ -14,10 +14,17 @@
 import { drawScene } from './render/compositor'
 import { isAppleWebKit } from './platform'
 import { resolveScene } from './model/scene'
-import { allClips, assetOf, projectDuration } from './model/selectors'
+import {
+  allClips,
+  assetOf,
+  clipIsLiveAt,
+  projectDuration,
+} from './model/selectors'
+import { textSourceForClip } from './render/textSource'
+import { ensureFontsForClips, ensureProjectFonts } from './text/fontLoader'
 import { IDENTITY } from './transform'
 import type { DrawItem } from './render/compositor'
-import type { CanvasSettings, Project } from './model/types'
+import type { CanvasSettings, Clip, Project } from './model/types'
 import type { Transform } from './transform'
 
 export class ExportUnsupportedError extends Error {
@@ -259,6 +266,15 @@ export function exportVideo(
     canvas: CanvasSettings
     transform?: Transform
     onProgress?: (fraction: number) => void
+    /** Text clips to burn over every frame, in draw order. Keeping them on THIS
+     *  path rather than falling back to `exportTimeline` is what preserves the
+     *  AAC packet-copy below — so a project with captions still exports with
+     *  audio where there is no AAC encoder (Firefox). */
+    overlays?: Clip[]
+    /** projectTime = sample.timestamp + timeOffset. Zero on the fast path, which
+     *  requires the media clip to start at 0 with no trim; passed explicitly so
+     *  relaxing that precondition later can't silently desync the overlays. */
+    timeOffset?: number
   },
 ): ExportHandle {
   // Held in an object (not a bare `let`) so the mutation from the `cancel`
@@ -269,9 +285,14 @@ export function exportVideo(
   let cancelConversion: (() => Promise<void>) | null = null
   const transform = opts.transform ?? IDENTITY
   const out = outputCanvas(opts.canvas)
+  const overlays = opts.overlays ?? []
+  const timeOffset = opts.timeOffset ?? 0
 
   const done = (async (): Promise<ExportResult> => {
     const mb = await import('mediabunny')
+    // The `process` hook below is SYNCHRONOUS and cannot await, so every face
+    // must be resolved before `Conversion.init`.
+    if (overlays.length > 0) await ensureFontsForClips(overlays)
 
     const output = new mb.Output({
       // `fastStart: 'in-memory'` writes the moov atom at the front so the result
@@ -324,6 +345,17 @@ export function exportVideo(
                 },
               },
             ]
+            // Caption burn-in, on the fast path. `clipIsLiveAt` is the ONE
+            // definition of a clip's live window, shared with `resolveScene`,
+            // so a text clip appears on exactly the frames the preview showed it.
+            if (overlays.length > 0) {
+              const t = sample.timestamp + timeOffset
+              for (const clip of overlays) {
+                if (!clipIsLiveAt(clip, t)) continue
+                const src = textSourceForClip(clip, out.width, out.height)
+                if (src) items.push({ transform: clip.transform, source: src })
+              }
+            }
             drawScene(drawCtx, out, items)
             return el
           },
@@ -469,6 +501,9 @@ export function exportTimeline(
 
   const done = (async (): Promise<ExportResult> => {
     const mb = await import('mediabunny')
+    // Resolve webfonts BEFORE any frame is drawn — otherwise the first frames
+    // encode in the fallback face and the output doesn't match the preview.
+    await ensureProjectFonts(project)
     const total = projectDuration(project)
     if (total <= 0) throw new ExportInvalidFileError('The timeline is empty.')
 
@@ -559,6 +594,15 @@ export function exportTimeline(
         const open: Array<{ close: () => void }> = []
         for (const item of resolveScene(project, t)) {
           const clip = item.clip
+          // Text BEFORE the asset guard — it is generated, not decoded, so it
+          // has no asset and would otherwise be silently dropped from the
+          // export while still showing in the preview. Same factory the preview
+          // uses; the layout behind it is memoized, so this is one cache hit.
+          if (clip.type === 'text') {
+            const src = textSourceForClip(clip, out.width, out.height)
+            if (src) items.push({ transform: clip.transform, source: src })
+            continue
+          }
           const asset = assetOf(project, clip)
           if (!asset) continue
           if (clip.type === 'video') {
@@ -626,40 +670,80 @@ export function exportTimeline(
   }
 }
 
+/** Which encoder `exportProject` will use, and with what. */
+export type ExportPlan =
+  | { path: 'image'; clip: Clip; assetId: string }
+  | { path: 'video'; clip: Clip; assetId: string; overlays: Clip[] }
+  | { path: 'timeline' }
+
 /**
- * Export the whole project, picking the best path: the fast single-source
- * encoders (which keep audio) for an untrimmed single clip, otherwise the
- * frame-by-frame timeline compositor (video-only).
+ * Decide how to export, as a PURE function — the rule is subtle enough (and the
+ * cost of getting it wrong is silent audio loss) that it deserves to be
+ * inspectable and unit-tested without touching WebCodecs.
+ *
+ * Text overlays are composited by the fast path itself, so they do NOT
+ * disqualify it — only the MEDIA clips decide which encoder can be used. Without
+ * that split, adding one caption would drop every project onto `exportTimeline`,
+ * which needs an AAC encoder and so exports SILENT on Firefox.
  */
-export function exportProject(
-  project: Project,
-  opts?: { onProgress?: (fraction: number) => void },
-): ExportHandle {
+export function planExport(project: Project): ExportPlan {
   const clips = allClips(project)
-  const single = clips.length === 1 ? clips[0] : null
+  // `allClips` walks tracks in order, so this preserves draw order.
+  const overlays = clips.filter((c) => c.type === 'text')
+  const media = clips.filter((c) => c.type !== 'text')
+  const single = media.length === 1 ? media[0] : null
   const asset =
     single && single.assetId != null ? project.assets[single.assetId] : null
 
   if (single && asset && single.start === 0 && single.trimIn === 0) {
-    if (single.type === 'image') {
-      return exportImage(asset.file, {
-        durationSec: single.duration,
-        canvas: project.canvas,
-        transform: single.transform,
-        onProgress: opts?.onProgress,
-      })
+    // `exportImage` bakes ONE composited frame and repeats it, which is wrong
+    // for overlays that have their own time windows — and a still has no audio
+    // for the fast path to protect. So any text sends stills to the compositor.
+    if (single.type === 'image' && overlays.length === 0) {
+      return { path: 'image', clip: single, assetId: asset.id }
     }
     // Untrimmed full-length single video → fast path keeps audio.
     const full =
       asset.durationSec == null ||
       Math.abs(single.duration - asset.durationSec) < 0.1
     if (single.type === 'video' && full) {
-      return exportVideo(asset.file, {
-        canvas: project.canvas,
-        transform: single.transform,
-        onProgress: opts?.onProgress,
-      })
+      return { path: 'video', clip: single, assetId: asset.id, overlays }
     }
+  }
+
+  return { path: 'timeline' }
+}
+
+/**
+ * Export the whole project, picking the best path: the fast single-source
+ * encoders (which keep audio) for an untrimmed single clip plus any number of
+ * text overlays, otherwise the frame-by-frame timeline compositor.
+ */
+export function exportProject(
+  project: Project,
+  opts?: { onProgress?: (fraction: number) => void },
+): ExportHandle {
+  const plan = planExport(project)
+
+  if (plan.path === 'image') {
+    return exportImage(project.assets[plan.assetId].file, {
+      durationSec: plan.clip.duration,
+      canvas: project.canvas,
+      transform: plan.clip.transform,
+      onProgress: opts?.onProgress,
+    })
+  }
+
+  if (plan.path === 'video') {
+    return exportVideo(project.assets[plan.assetId].file, {
+      canvas: project.canvas,
+      transform: plan.clip.transform,
+      onProgress: opts?.onProgress,
+      overlays: plan.overlays,
+      // Safe because the plan requires start === 0 && trimIn === 0, so project
+      // time is exactly the sample timestamp.
+      timeOffset: 0,
+    })
   }
 
   return exportTimeline(project, opts)

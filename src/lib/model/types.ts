@@ -9,9 +9,11 @@
 
 import type { Transform } from '@/lib/transform'
 import type { MediaKind } from '@/lib/media'
+import type { TextStyle } from './text'
 
 export type { Transform }
 export type { MediaKind }
+export type { TextStyle }
 
 export type ClipType = 'video' | 'image' | 'text' | 'audio'
 export type TrackType = 'video' | 'audio' | 'overlay'
@@ -50,9 +52,12 @@ export interface Clip {
   /** Placement on the 16:9 canvas — see src/lib/transform.ts. */
   transform: Transform
   // Per-type optional props:
+  /** text: the content, verbatim as typed (multi-line, emoji-safe). Letter case
+   *  is a style applied at layout time, so this is never transformed. */
   text?: string
-  fontSize?: number
-  color?: string
+  /** text: formatting. Nested like `transform` — see src/lib/model/text.ts.
+   *  Always read it through `withTextDefaults`, never field-by-field. */
+  textStyle?: TextStyle
   volume?: number
   muted?: boolean
 }
