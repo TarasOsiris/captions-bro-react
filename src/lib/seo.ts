@@ -74,9 +74,10 @@ export function seo({
     { name: 'apple-mobile-web-app-title', content: siteName },
     { name: 'author', content: siteName },
     { name: 'robots', content: robots },
-    // SSR default (matches dark --bg); the theme module rewrites this to the
-    // light value on mount/toggle when the applied theme is light.
-    { name: 'theme-color', content: '#0b0d10' },
+    // SSR default (dark --surface, matching the manifest's theme_color); the
+    // theme module rewrites this to the light value on mount/toggle when the
+    // applied theme is light. See THEME_COLOR in lib/theme.ts.
+    { name: 'theme-color', content: '#1d222a' },
     // Open Graph
     { property: 'og:site_name', content: siteName },
     { property: 'og:type', content: type },

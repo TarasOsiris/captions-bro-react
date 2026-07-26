@@ -24,6 +24,9 @@ export default [
       '.tanstack',
       'dist',
       'src/routeTree.gen.ts',
+      // Unbundled service worker: served verbatim from public/, so it is a
+      // classic script in a ServiceWorkerGlobalScope, not a module in src/.
+      'public/sw.js',
     ],
   },
 ]

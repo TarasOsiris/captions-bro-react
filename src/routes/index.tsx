@@ -11,6 +11,8 @@ import { usePlayback } from '@/hooks/usePlayback'
 import { useUndoRedo } from '@/hooks/useUndoRedo'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { useFontLoader } from '@/hooks/useFontLoader'
+import { useLaunchFiles } from '@/hooks/useLaunchFiles'
+import { useServiceWorker } from '@/hooks/useServiceWorker'
 import { ExportScreen } from '@/components/editor/ExportScreen'
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { MediaPanel } from '@/components/editor/MediaPanel'
@@ -51,6 +53,8 @@ function Editor() {
   // Keeps every face the document uses loaded — including after a reload or an
   // undo, which have no UI action behind them.
   useFontLoader()
+  // Offline shell + the "new version ready" prompt (production only).
+  useServiceWorker()
 
   // Release all source URLs at unmount.
   useEffect(
@@ -72,6 +76,10 @@ function Editor() {
     },
     [saveUndo, importFile],
   )
+
+  // "Open with → Captions Bro" and the OS share sheet land here, on the same
+  // importer as the picker and the drop target.
+  useLaunchFiles(handleImport)
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

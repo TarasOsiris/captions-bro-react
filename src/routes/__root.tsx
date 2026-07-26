@@ -23,6 +23,15 @@ export const Route = createRootRoute({
           name: 'viewport',
           content: 'width=device-width, initial-scale=1, viewport-fit=cover',
         },
+        // iOS ignores the manifest's `display` for home-screen launches on
+        // older versions, and ignores `theme_color` entirely — these two are
+        // what actually make an installed Captions Bro run chromeless. With
+        // `default`, WebKit tints the status bar from the page's `theme-color`
+        // meta, which src/lib/theme.ts rewrites per theme; `black-translucent`
+        // would force white status text over a white light-theme TopBar.
+        { name: 'mobile-web-app-capable', content: 'yes' },
+        { name: 'apple-mobile-web-app-capable', content: 'yes' },
+        { name: 'apple-mobile-web-app-status-bar-style', content: 'default' },
         ...meta,
       ],
       links: [

@@ -14,6 +14,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { InstallButton } from '@/components/editor/InstallButton'
 import { useTheme } from '@/hooks/useTheme'
 
 /** Only shown if the probe somehow reported failure without a reason. */
@@ -86,6 +87,10 @@ export function TopBar({
           </span>
         </Badge>
       )}
+
+      {/* Renders null unless there is an install path to offer, so it costs no
+          width on desktop Chrome-with-it-already-installed or on Firefox. */}
+      <InstallButton />
 
       <Tooltip>
         <TooltipTrigger asChild>

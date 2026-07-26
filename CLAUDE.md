@@ -49,11 +49,16 @@ so it only has to generate text clips (see "Text overlays").
   the preview draws from; `usePlayback` slaves them to the timeline clock.
 - `src/lib/persistence/` — `assetStore.ts` (IndexedDB media blobs) + `projectStore.ts`
   (localStorage document JSON, blob-stripped); `usePersistence` hydrates + debounce-saves.
+- `src/lib/pwa/` — the installable-app layer: `register.ts` (service worker
+  registration + the update handshake), `shareTarget.ts` (the page half of the
+  Web Share Target hand-off), `install.ts` (`beforeinstallprompt` / iOS
+  detection), `constants.ts` (the literals `public/sw.js` repeats).
 - `src/hooks/` — orchestration: `usePlayback` (virtual-timeline clock),
   `useMediaImport` (append clip + store blob), `useExport`, `useEditorKeyboard`,
   `useUndoRedo` (snapshot-based, over the document), `usePersistence`,
   `useFontLoader` (keeps the document's faces loaded across reload/undo),
-  `useTextStyle` (per-field atomic selectors + rAF-throttled writes).
+  `useTextStyle` (per-field atomic selectors + rAF-throttled writes),
+  `useServiceWorker` / `useLaunchFiles` / `useInstallPrompt` (see "PWA").
 - `src/components/editor/` — the store-connected shell (TopBar, MediaPanel,
   PreviewStage, Timeline, InspectorPanel, MobileDock, ExportScreen);
   `src/components/ui/` — shadcn primitives. `MediaPanel.tsx` exports three
@@ -371,6 +376,94 @@ iPad + trackpad).
 - **No per-line caption backgrounds** (the Instagram look) — the background box
   wraps the whole block. Per-line boxes need the layout to emit one rect per
   line, which is a feature, not a fix.
+
+## PWA — the editor installs and runs offline
+
+Nothing about this app needs a server at runtime, so "installable, offline,
+receives files from the OS" is the honest shape for it, not a badge. Four parts:
+`public/site.webmanifest`, `public/sw.js`, `src/lib/pwa/` and the three hooks
+mounted by `routes/index.tsx` (`useServiceWorker`, `useLaunchFiles`, plus
+`useInstallPrompt` behind `TopBar`'s `InstallButton`).
+
+### The service worker must never be the thing that goes stale
+
+`public/sw.js` is served verbatim from `public/` — plain JS, no build step, no
+bundler, no precache manifest. It is therefore **byte-identical across deploys**,
+and the caching strategy is designed so that doesn't matter:
+
+- **Documents are network-first** (3.5s timeout → cached shell). Online you
+  always boot the current HTML. A stale-while-revalidate shell would be faster
+  and would hand out HTML pointing at a previous build's asset hashes for one
+  load after every deploy.
+- **`/assets/*` is cache-first**, because Vite content-hashes it: immutable URLs
+  mean cache-first can't serve a wrong version. That cache is trimmed by entry
+  count (oldest-first), never purged on version bump — so a previously cached
+  build still boots offline.
+- `CACHE_VERSION` exists only to force a clean sweep when the STRATEGY changes.
+  Bump it then. **Do not bump it per release** — nothing depends on it.
+- Google Fonts are cached (SWR for the UA-varying stylesheet, cache-first for the
+  immutable woff2), which is what makes text render in the right face offline.
+  GA4 is deliberately never cached and simply fails offline.
+- **Install scrapes `/assets/…\.(js|css)` out of the shell HTML** and caches those
+  chunks itself. Without it, offline only works from the SECOND visit: the first
+  page load happens before the worker controls the client, so its asset requests
+  never reach the fetch handler. Lazily-imported chunks (mediabunny, inside
+  `export.ts`) are still picked up by the runtime rule on the first online export.
+- Range requests (`<video>` seeking) and non-GET are passed straight through.
+
+### The update handshake never interrupts an export
+
+The worker **does not call `skipWaiting()` on its own**. A new build taking over
+mid-session would swap the asset set under a running encode. Instead `register.ts`
+reports a `waiting` worker, `useServiceWorker` shows a toast, and only the user's
+click posts `SKIP_WAITING` and reloads on `controllerchange`. `onUpdate` fires
+only when a controller already exists — the first visit is an install, not an
+update, and must not prompt a reload. And if `exportPhase !== 'idle'` the toast is
+held until the export screen closes.
+
+**In DEV the hook does the opposite and unregisters everything.** `npm run dev`,
+`preview` and `start` all share `localhost:3000`, so a worker installed by a
+production build would keep serving cached prod assets over the dev server and
+make source edits look like they did nothing.
+
+### OS entry points funnel into the one importer
+
+`file_handlers` (Open with → Captions Bro) and `share_target` (the Android /
+ChromeOS share sheet) both end at the same `handleImport` the picker and the drop
+target use — via `useLaunchFiles`. Two things are load-bearing:
+
+- **`launch_handler: focus-existing`.** The default (`navigate-existing`) would
+  reload the open editor, dropping the very session the file is meant to join.
+- **Share target has no server route.** `sw.js` intercepts the POST, parks the
+  files in a Cache and 303s to `/?share-target=1`; `lib/pwa/shareTarget.ts` drains
+  and empties that inbox on boot, then strips the flag so a reload can't re-import.
+  A Cache is the only storage the worker and the page both reach without agreeing
+  on an IndexedDB schema. The constants are duplicated in `sw.js` and
+  `lib/pwa/constants.ts` — change one, change both.
+
+### Install affordance, icons, colour
+
+- Chromium's `beforeinstallprompt` is captured (suppressing the mini-infobar) and
+  replayed from `InstallButton`. **iOS has no API at all**, so the same button
+  opens a popover describing Share → Add to Home Screen — a popover, not a
+  tooltip, because Radix tooltips are hover/focus-only and would be unreachable on
+  exactly the devices that need them. Same rule as the export gate: platform
+  detection picks the COPY, never the capability.
+- **Maskable icons are a separate pair of files.** `app-icon-*.png` is the iOS-style
+  rounded square; feeding that to Android's adaptive mask clips its corners.
+  `app-icon-maskable-*.png` is the same art at 66% on a full-bleed gradient whose
+  ramp continues the artwork's own, so the inner square's edge is invisible and
+  everything sits inside the 80% safe circle.
+- **Three colour values must agree** or the launch flashes: `theme_color` in the
+  manifest, `THEME_COLOR.dark` in `lib/theme.ts`, and the SSR `theme-color` default
+  in `lib/seo.ts`. They track `--surface`, NOT `--bg`, because the status bar sits
+  directly above the `bg-surface` TopBar. `apple-mobile-web-app-status-bar-style`
+  is `default` on purpose: it makes WebKit tint the status bar from `theme-color`
+  (which `theme.ts` rewrites per theme), whereas `black-translucent` would force
+  white status text over a white light-theme TopBar.
+- The manifest's `screenshots` are real captures of a seeded demo project. If the
+  chrome changes materially, re-shoot them — a stale screenshot in the install
+  dialog is worse than none.
 
 ## Conventions
 

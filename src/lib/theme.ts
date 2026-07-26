@@ -7,10 +7,14 @@ export type Theme = 'light' | 'dark'
 
 const STORAGE_KEY = 'cb-theme'
 
-// Meta `theme-color` values (mobile browser chrome), matching --bg per theme.
+// Meta `theme-color` values, matching --surface per theme — NOT --bg. This
+// colours the mobile browser chrome and, in an installed PWA, the strip behind
+// the status bar; both sit directly above the TopBar, which is `bg-surface`.
+// Keep the dark value in sync with `theme_color` in public/site.webmanifest and
+// the SSR default in lib/seo.ts, so there's no flash on launch.
 const THEME_COLOR: Record<Theme, string> = {
-  dark: '#0b0d10',
-  light: '#f4f5f7',
+  dark: '#1d222a',
+  light: '#ffffff',
 }
 
 /** The theme currently applied to the document — read from the class the
