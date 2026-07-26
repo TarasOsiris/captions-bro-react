@@ -294,6 +294,12 @@ Also:
   crosses its threshold — then an abandoned or cancelled drag leaves no entry.
 - Guard `e.pointerType === 'mouse' && e.button !== 0`: `contextmenu` fires no
   `pointerup`, so a right-click otherwise starts a drag that sticks.
+- **Mounting a focusable element from inside a `pointerdown` handler needs
+  `e.preventDefault()`.** Otherwise that same press's default action then moves
+  focus to the element under the cursor, blurring what you just focused. The
+  double-tap-to-edit text editor closed itself the instant it opened until this
+  was added — and it fails silently, because the state IS set, just reverted a
+  tick later by the blur handler.
 
 ### Hit areas grow via a transparent `::after`, not size bumps
 

@@ -582,6 +582,12 @@ export function PreviewStage({
           now - last.t < 300 &&
           Math.hypot(e.clientX - last.x, e.clientY - last.y) < 12
         ) {
+          // Stop the browser's default focus handling for THIS press. The
+          // editor is mounted and focused from inside this handler, and without
+          // preventDefault the press's own default action then moves focus back
+          // to the frame — blurring the textarea, which closes it again the
+          // instant it opens.
+          e.preventDefault()
           lastTapRef.current = null
           selectClip(clip.id)
           setEditingClipId(clip.id)
