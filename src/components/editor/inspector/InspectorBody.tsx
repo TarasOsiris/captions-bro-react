@@ -57,7 +57,10 @@ export function InspectorBody({
             group={`cb-inspector-${variant}`}
           />
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          // `h-full`, not `flex-1`: the scroll container is a block, so a flex
+          // child of it has no height to grow into and the empty state would
+          // sit at the top of an always-visible column.
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-raised text-muted/70">
               <SlidersHorizontal className="h-5 w-5" />
             </div>

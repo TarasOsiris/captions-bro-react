@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   clipIsLiveAt,
   insertionIndex,
+  mediaClips,
   overlayTrack,
   resolveTrim,
   snapTargets,
@@ -116,6 +117,17 @@ describe('overlayTrack', () => {
     const overlay = createTrack('overlay')
     p.tracks.push(overlay)
     expect(overlayTrack(p)?.id).toBe(overlay.id)
+  })
+})
+
+describe('mediaClips — what the media bin lists', () => {
+  it('keeps asset-backed clips and drops generated (text) ones', () => {
+    const p = createProject('t')
+    p.tracks[0].clips = [clip('a', 0, 5)]
+    const overlay = createTrack('overlay')
+    overlay.clips = [createTextClip({ start: 1, duration: 3 })]
+    p.tracks.push(overlay)
+    expect(mediaClips(p).map((c) => c.id)).toEqual(['a'])
   })
 })
 

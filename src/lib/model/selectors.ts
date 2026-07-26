@@ -8,6 +8,15 @@ export function allClips(project: Project): Clip[] {
   return project.tracks.flatMap((t) => t.clips)
 }
 
+/** Every clip backed by an imported file — what the media bin lists. Generated
+ *  clips (text, and any future generated type) have no `assetId` and are NOT
+ *  media: the bin is the collection of available photos and videos, so a text
+ *  overlay must never show up there. Filter on `assetId`, not `type`, so a new
+ *  generated clip type is excluded by construction. */
+export function mediaClips(project: Project): Clip[] {
+  return allClips(project).filter((c) => c.assetId != null)
+}
+
 /** The first clip in document order, or null. In the single-clip MVP this is the
  *  "active" clip; multi-track selection supersedes it later. */
 export function firstClip(project: Project): Clip | null {

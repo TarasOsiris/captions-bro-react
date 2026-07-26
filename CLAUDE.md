@@ -49,6 +49,7 @@ so it only has to generate text clips (see "Text overlays").
   the preview draws from; `usePlayback` slaves them to the timeline clock.
 - `src/lib/persistence/` — `assetStore.ts` (IndexedDB media blobs) + `projectStore.ts`
   (localStorage document JSON, blob-stripped); `usePersistence` hydrates + debounce-saves.
+  `layoutPrefs.ts` is the side columns' widths — chrome, not document.
 - `src/lib/pwa/` — the installable-app layer: `register.ts` (service worker
   registration + the update handshake), `shareTarget.ts` (the page half of the
   Web Share Target hand-off), `install.ts` (`beforeinstallprompt` / iOS
@@ -58,6 +59,7 @@ so it only has to generate text clips (see "Text overlays").
   `useUndoRedo` (snapshot-based, over the document), `usePersistence`,
   `useFontLoader` (keeps the document's faces loaded across reload/undo),
   `useTextStyle` (per-field atomic selectors + rAF-throttled writes),
+  `usePanelResize` (the two draggable side columns),
   `useServiceWorker` / `useLaunchFiles` / `useInstallPrompt` (see "PWA").
 - `src/components/editor/` — the store-connected shell (TopBar, MediaPanel,
   PreviewStage, Timeline, InspectorPanel, MobileDock, ExportScreen);
@@ -220,10 +222,55 @@ siblings.
   the inspector are dropped and `MobileDock` takes over. `sm:` is for text
   density only, never structure. No custom breakpoints — don't add
   `--breakpoint-*` to `@theme`.
-- Why `lg` and not a tablet tier: desktop chrome is 608px of fixed side panels.
+- Why `lg` and not a tablet tier: desktop chrome starts at 608px of side panels.
   At 1024 the preview still gets 416px; at 768 it gets 160px and is broken. A
-  `md` tier could only shed the inspector, which renders `null` when nothing is
-  selected — so shedding it at _every_ width below `lg` is free.
+  `md` tier could only shed the inspector, which is mostly an empty state when
+  nothing is selected — so shedding it at _every_ width below `lg` is free.
+
+### Both side columns are user-resizable — `usePanelResize`
+
+At `lg+` the media column and the inspector are dragged by a `role="separator"`
+handle on their outer edge, through ONE hook (`src/hooks/usePanelResize.ts`), so
+the two edges cannot drift apart. The rules that keep it cheap and safe:
+
+- **The width is written to the DOM, never to React state**, and the writes are
+  rAF-coalesced. A state write per pointermove would re-render the panel's
+  subtree — every inspector control, every bin tile — at pointer rate; each DOM
+  write already costs a `PreviewStage` re-render through its `ResizeObserver`,
+  so one per frame is the floor, not something to optimise away later.
+- **`preferred` ≠ rendered.** The stored preference is the user's choice; the
+  rendered width is what currently fits. Only `preferred` is persisted, and only
+  a gesture that actually MOVED persists anything — otherwise a click on a
+  cramped window would quietly rewrite a wider preference chosen on a big
+  monitor. Cancel and no-move both restore it and save nothing.
+- **The preview floor is enforced on the PAIR, in the pure `fitPanels`.** Two
+  widths that are each legal alone still starve the preview once the window
+  narrows, so the panels share a module-level registry and re-fit on `resize`,
+  each giving up the same fraction of its slack above its own minimum. The
+  re-fit is therefore reversible: widening the window restores both preferences
+  exactly. `layoutPrefs.test.ts` pins that, including the both-at-minimum floor.
+- **`spec.initial` is the ONLY default width.** The panel renders
+  `style={{ width: spec.initial }}` — there is no `w-*` class mirroring it, or
+  the two would drift and the column would jump a frame after hydration. The
+  restore runs in a layout effect (SSR-guarded), before paint, or every load
+  flashes the default width first.
+- **The hit area grows INWARD.** A `::after` that overhangs the neighbouring
+  `PreviewStage` punches a hole in the app's drop target, and a file dropped on
+  a non-target navigates the tab away from the editor — session gone.
+- **The separator is a real widget, and a hostile one if half-built.** It takes
+  focus explicitly on pointerdown (the `preventDefault` that stops text
+  selection also stops focus), and it CONSUMES every key `useEditorKeyboard`
+  handles — that listener is on `window` and only skips INPUT/TEXTAREA, so an
+  unconsumed Backspace on a focused splitter deletes the selected clip. Tab and
+  Cmd+Z still pass through. ←/→ nudge, Home/End go to the bounds, Enter and
+  double-click reset.
+- Each handle is the DOM child adjacent to the edge it sits on (last for the
+  media column, first for the inspector), so tab order matches the eye.
+- The bins reflow by themselves: `repeat(auto-fill,minmax(4.75rem,1fr))` turns a
+  wider column into more tiles per row (2 at the minimum width, 5 at the
+  maximum) with no breakpoint and no JS.
+- The inspector column is ALWAYS mounted at `lg+`, empty state included, so
+  selecting a clip never resizes the preview under the user.
 
 ### Fixed chrome geometry lives in `styles.css`
 

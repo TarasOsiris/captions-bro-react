@@ -16,13 +16,15 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useEditorStore } from '@/store/editorStore'
-import { allClips, assetOf, revealTime } from '@/lib/model/selectors'
+import { assetOf, mediaClips, revealTime } from '@/lib/model/selectors'
 import type { Clip } from '@/lib/model/types'
 import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 import { TextPresetBin } from '@/components/editor/TextPanel'
 import { DESKTOP_PANEL_ID } from '@/components/editor/panelIds'
+import { usePanelResize } from '@/hooks/usePanelResize'
+import { MEDIA_WIDTH } from '@/lib/persistence/layoutPrefs'
 import type { Panel } from '@/store/uiSlice'
 
 interface MediaBinProps {
@@ -170,7 +172,8 @@ export function MediaBin({
   const disabled = useEditorStore((s) => s.exportPhase === 'exporting')
   const [draggingId, setDraggingId] = useState<string | null>(null)
 
-  const clips = allClips(project)
+  // Media only — text clips live on the overlay lane and in the Text tab.
+  const clips = mediaClips(project)
 
   /** Select a clip and reveal it — same rule as Timeline's `selectClipAt`.
    *  Selecting without moving the playhead onto the clip leaves the preview
@@ -327,19 +330,31 @@ export function MediaBin({
  *  Reads `panel ?? 'media'`: the desktop bin has no closed state, so a null
  *  panel (nothing opened yet, or the mobile sheet dismissed) still shows Media.
  *  That one difference in how the SAME store value is read is what lets the two
- *  layouts diverge without a JS breakpoint fork. */
+ *  layouts diverge without a JS breakpoint fork.
+ *
+ *  The width is resized on the WHOLE aside (rail + body): the rail is fixed, so
+ *  the body takes the difference through `flex-1`. Both bins lay out on an
+ *  `auto-fill` grid, so the column count follows the new width by itself — no
+ *  breakpoint, no JS. */
 export function MediaPanel(props: MediaBinProps & { onEditStart: () => void }) {
   const tab = useEditorStore((s) => s.panel) ?? 'media'
   const setPanel = useEditorStore((s) => s.setPanel)
   const { onEditStart, ...binProps } = props
+  const { panelProps, handleProps } = usePanelResize(MEDIA_WIDTH, {
+    edge: 'right',
+    label: 'Resize media panel',
+  })
 
   return (
-    <aside className="hidden shrink-0 border-r border-edge bg-surface lg:flex">
+    <aside
+      {...panelProps}
+      className="relative hidden shrink-0 border-r border-edge bg-surface lg:flex"
+    >
       <nav
         role="tablist"
         aria-orientation="vertical"
         aria-label="Editor panels"
-        className="flex w-16 flex-col items-center gap-1 border-r border-edge/60 py-3"
+        className="flex w-16 shrink-0 flex-col items-center gap-1 border-r border-edge/60 py-3"
       >
         <MediaRail
           orientation="vertical"
@@ -349,13 +364,21 @@ export function MediaPanel(props: MediaBinProps & { onEditStart: () => void }) {
         />
       </nav>
 
-      <div id={DESKTOP_PANEL_ID} role="tabpanel" className="flex w-72 flex-col">
+      {/* min-w-0 so the grid inside can actually shrink with the panel. */}
+      <div
+        id={DESKTOP_PANEL_ID}
+        role="tabpanel"
+        className="flex min-w-0 flex-1 flex-col"
+      >
         {tab === 'text' ? (
           <TextPresetBin onEditStart={onEditStart} />
         ) : (
           <MediaBin {...binProps} />
         )}
       </div>
+
+      {/* Last child: it sits on the RIGHT edge, so tab order matches the eye. */}
+      <div {...handleProps} />
     </aside>
   )
 }
