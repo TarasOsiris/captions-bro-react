@@ -49,7 +49,7 @@ function Editor() {
     saveUndo,
     enabled: exportPhase === 'idle',
   })
-  usePersistence()
+  const { hydrated } = usePersistence()
   // Keeps every face the document uses loaded — including after a reload or an
   // undo, which have no UI action behind them.
   useFontLoader()
@@ -78,8 +78,11 @@ function Editor() {
   )
 
   // "Open with → Captions Bro" and the OS share sheet land here, on the same
-  // importer as the picker and the drop target.
-  useLaunchFiles(handleImport)
+  // importer as the picker and the drop target. `ready` is the guard the UI
+  // gives every other import path for free: not before the saved project has
+  // hydrated (`replaceProject` would erase the import), and not while the
+  // export screen owns the session (`importFile` calls `resetExport`).
+  useLaunchFiles(handleImport, { ready: hydrated && exportPhase === 'idle' })
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

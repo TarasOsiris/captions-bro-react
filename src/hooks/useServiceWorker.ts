@@ -25,7 +25,21 @@ export function useServiceWorker() {
       return
     }
 
-    const showUpdateToast = () => {
+    // A waiting worker stays waiting; only this toast's button lets it take
+    // over. So the toast can be shown, hidden and shown again freely — the
+    // update is not lost, it just isn't being OFFERED.
+    let updateReady = false
+
+    const syncUpdateToast = (exportPhase: string) => {
+      if (!updateReady) return
+      if (exportPhase !== 'idle') {
+        // The reload discards an in-progress encode and the in-memory result
+        // blob, and sonner floats above ExportScreen — right over its
+        // Share/Download row. A persistent "Reload" there is a mis-tap away
+        // from destroying the export. Re-offered the moment it closes.
+        toast.dismiss(UPDATE_TOAST_ID)
+        return
+      }
       toast('A new version of Captions Bro is ready.', {
         id: UPDATE_TOAST_ID,
         description: 'Reload to pick it up.',
@@ -34,29 +48,25 @@ export function useServiceWorker() {
       })
     }
 
-    // Never offer a reload mid-export: the encode lives entirely in this page,
-    // so reloading throws away however many minutes of work. Hold the update
-    // (the worker stays `waiting` regardless) until the export screen is done.
-    let unsubscribe: (() => void) | undefined
     const onUpdate = () => {
-      if (useEditorStore.getState().exportPhase === 'idle') {
-        showUpdateToast()
-        return
-      }
-      unsubscribe?.()
-      unsubscribe = useEditorStore.subscribe((state) => {
-        if (state.exportPhase !== 'idle') return
-        unsubscribe?.()
-        unsubscribe = undefined
-        showUpdateToast()
-      })
+      updateReady = true
+      syncUpdateToast(useEditorStore.getState().exportPhase)
     }
+
+    // Cheap: one string compare per store write, and the store is written on
+    // every frame of a slider drag.
+    let lastPhase = useEditorStore.getState().exportPhase
+    const unsubscribe = useEditorStore.subscribe((state) => {
+      if (state.exportPhase === lastPhase) return
+      lastPhase = state.exportPhase
+      syncUpdateToast(state.exportPhase)
+    })
 
     const disposeSw = registerServiceWorker(onUpdate)
 
     // The editor is fully client-side, so offline is a non-event — but only if
     // we say so. Silence reads as breakage.
-    const onOffline = () => {
+    const showOffline = () => {
       toast('You’re offline.', {
         id: OFFLINE_TOAST_ID,
         description:
@@ -67,13 +77,25 @@ export function useServiceWorker() {
     const onOnline = () => {
       toast.dismiss(OFFLINE_TOAST_ID)
     }
-    window.addEventListener('offline', onOffline)
+    window.addEventListener('offline', showOffline)
     window.addEventListener('online', onOnline)
 
+    // `offline` is a TRANSITION. Launching in airplane mode fires nothing, so
+    // the one session that most needs the reassurance would never get it.
+    //
+    // Deferred to a macrotask, not called inline: `<Toaster/>` is a LATER
+    // sibling of `{children}` in __root.tsx, so its subscribe-on-mount effect
+    // runs after this one, and sonner drops anything published before it. A
+    // timeout lands after the whole passive-effect flush, so the toast sticks.
+    const bootCheck = setTimeout(() => {
+      if (!navigator.onLine) showOffline()
+    }, 0)
+
     return () => {
+      clearTimeout(bootCheck)
       disposeSw()
-      unsubscribe?.()
-      window.removeEventListener('offline', onOffline)
+      unsubscribe()
+      window.removeEventListener('offline', showOffline)
       window.removeEventListener('online', onOnline)
     }
   }, [])

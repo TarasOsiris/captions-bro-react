@@ -3,6 +3,7 @@ import {
   getAppliedTheme,
   setTheme,
   subscribe,
+  syncMetaThemeColor,
   syncSystem,
   toggleTheme,
 } from '@/lib/theme'
@@ -26,6 +27,9 @@ export function useTheme(): {
   )
 
   useEffect(() => {
+    // The head script applied the theme but could not touch the `theme-color`
+    // meta; catch it up, or a light-theme session keeps the dark SSR value.
+    syncMetaThemeColor()
     const mql = window.matchMedia('(prefers-color-scheme: dark)')
     const onChange = () => syncSystem(mql.matches)
     mql.addEventListener('change', onChange)

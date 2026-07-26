@@ -409,6 +409,16 @@ and the caching strategy is designed so that doesn't matter:
   page load happens before the worker controls the client, so its asset requests
   never reach the fetch handler. Lazily-imported chunks (mediabunny, inside
   `export.ts`) are still picked up by the runtime rule on the first online export.
+- **Precache into the cache the fetch handler READS.** The document goes to
+  `SHELL_CACHE` because that's where `networkFirstDocument` looks; icons and the
+  manifest go to `STATIC_CACHE` because that's where `isStaticAsset` routes them.
+  Putting the icons in `SHELL_CACHE` (as this originally did) is dead bytes — it
+  looks precached, and the TopBar logo still breaks on a first-visit-then-offline
+  reload. The `?v=2` suffixes matter too: `Cache.match` keys on the full URL.
+- **A 5xx falls back to the cached shell**, a 4xx does not. The origin being
+  unwell says nothing about an app that runs entirely client-side, so a deploy
+  blip should serve the shell rather than the host's error page; a 404 is an
+  answer, not an outage.
 - Range requests (`<video>` seeking) and non-GET are passed straight through.
 
 ### The update handshake never interrupts an export
@@ -418,25 +428,60 @@ mid-session would swap the asset set under a running encode. Instead `register.t
 reports a `waiting` worker, `useServiceWorker` shows a toast, and only the user's
 click posts `SKIP_WAITING` and reloads on `controllerchange`. `onUpdate` fires
 only when a controller already exists — the first visit is an install, not an
-update, and must not prompt a reload. And if `exportPhase !== 'idle'` the toast is
-held until the export screen closes.
+update, and must not prompt a reload.
+
+**The toast tracks `exportPhase` for its whole life, not just at show time.** It
+is `duration: Infinity`, sonner floats above `ExportScreen`'s `z-50`, and
+`--toast-offset-bottom` puts it exactly over the Share/Download row — so a toast
+raised while idle and left up is a mis-tap away from reloading over a running
+encode. A store subscription dismisses it when the phase leaves `idle` and
+re-raises it on the way back; the waiting worker stays waiting throughout, so
+nothing is lost by hiding the offer.
 
 **In DEV the hook does the opposite and unregisters everything.** `npm run dev`,
 `preview` and `start` all share `localhost:3000`, so a worker installed by a
 production build would keep serving cached prod assets over the dev server and
 make source edits look like they did nothing.
 
-### OS entry points funnel into the one importer
+### OS entry points funnel into the one importer — and must be gated by hand
 
 `file_handlers` (Open with → Captions Bro) and `share_target` (the Android /
 ChromeOS share sheet) both end at the same `handleImport` the picker and the drop
-target use — via `useLaunchFiles`. Two things are load-bearing:
+target use — via `useLaunchFiles`.
+
+**This is the one import path with no UI in front of it, so it carries its own
+guards.** Every in-app path inherits safety from the chrome: `ExportScreen`
+covers the editor whenever `exportPhase !== 'idle'`, the panels disable
+themselves, `useEditorKeyboard` takes `enabled`. The OS calls in from outside all
+of that, and `focus-existing` guarantees it lands in a RUNNING session. So
+`routes/index.tsx` passes `ready: hydrated && exportPhase === 'idle'`, and
+anything arriving early is HELD and flushed when the gate opens:
+
+- **Not before hydration.** `usePersistence` restores asynchronously and installs
+  the result with `replaceProject`, which swaps the document wholesale — an
+  import that lands first is silently erased. That's why `usePersistence` returns
+  `{ hydrated }` at all.
+- **Not during an export.** `importFile` calls `resetExport()`, which unmounts
+  `ExportScreen` — mid-encode that hides the progress and cancel button while the
+  encode runs on invisibly; post-encode it strands the finished MP4, which on iOS
+  is reachable ONLY from that screen.
+
+Two more things are load-bearing:
 
 - **`launch_handler: focus-existing`.** The default (`navigate-existing`) would
   reload the open editor, dropping the very session the file is meant to join.
 - **Share target has no server route.** `sw.js` intercepts the POST, parks the
-  files in a Cache and 303s to `/?share-target=1`; `lib/pwa/shareTarget.ts` drains
-  and empties that inbox on boot, then strips the flag so a reload can't re-import.
+  files in a Cache and 303s to `/?share-target=1`; `lib/pwa/shareTarget.ts` reads
+  that inbox. **The INBOX is the trigger, not the `?share-target=1` flag** —
+  under `focus-existing` a share into an already-open app focuses the window
+  without navigating, so no flag ever appears; flag-only detection silently
+  dropped those. `useLaunchFiles` drains on mount, on a launch whose `targetURL`
+  carries the flag, and on `visibilitychange`. Reading and deleting are also
+  separate (`peekSharedFiles` / `discardSharedFiles`): the delete happens only
+  once the files reach the importer, because the OS keeps no copy to re-share.
+  Entries expire after `SHARE_TTL_MS` on both sides — the inbox holds whole video
+  files, and an abandoned share would otherwise pin gigabytes against the origin
+  quota until IndexedDB persistence started failing.
   A Cache is the only storage the worker and the page both reach without agreeing
   on an IndexedDB schema.
 

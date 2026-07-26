@@ -64,7 +64,15 @@ async function hydrate(stored: StoredProject): Promise<Project | null> {
   }
 }
 
-export function usePersistence() {
+/**
+ * Returns `{ hydrated }` — false until the restore attempt has settled.
+ *
+ * It is exported because restore ends in `replaceProject`, which swaps the
+ * document WHOLESALE: anything written before that lands is silently thrown
+ * away. In-app edits can't hit that window (there is nothing to click yet), but
+ * an OS-delivered file can — see `useLaunchFiles`, which waits on this.
+ */
+export function usePersistence(): { hydrated: boolean } {
   const [ready, setReady] = useState(false)
 
   // Restore on mount (once).
@@ -118,4 +126,6 @@ export function usePersistence() {
       clearTimeout(t)
     }
   }, [project, ready])
+
+  return { hydrated: ready }
 }

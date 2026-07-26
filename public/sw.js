@@ -42,9 +42,21 @@ const MAX_FONT_ENTRIES = 80
 /** How long to wait for the network before falling back to the cached shell. */
 const NAV_TIMEOUT_MS = 3500
 
-/** Everything needed to boot the editor with no network at all. */
-const SHELL_URLS = [
-  '/',
+/** The document. Precached into SHELL_CACHE, which is where the navigation
+ *  handler looks for it. */
+const SHELL_URL = '/'
+
+/**
+ * Static files to precache. These go into STATIC_CACHE, NOT SHELL_CACHE —
+ * `isStaticAsset` routes their runtime requests to STATIC_CACHE, so a copy
+ * parked anywhere else is dead bytes that no fetch will ever read. (It was
+ * SHELL_CACHE, which is exactly that bug: the icons looked precached and the
+ * TopBar logo still broke on a first-visit-then-offline reload.)
+ *
+ * The `?v=2` suffixes are load-bearing — Cache.match keys on the full URL
+ * including the query, and that is the form the document requests.
+ */
+const STATIC_PRECACHE_URLS = [
   '/site.webmanifest',
   '/app-icon-192.png?v=2',
   '/app-icon-512.png?v=2',
@@ -58,18 +70,9 @@ const SHELL_URLS = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
-      const cache = await caches.open(SHELL_CACHE)
-      let shellHtml = ''
       // `cache: 'reload'` bypasses the HTTP cache so a reinstall genuinely
-      // refetches the shell rather than re-storing a stale copy.
-      await Promise.allSettled(
-        SHELL_URLS.map(async (url) => {
-          const res = await fetch(new Request(url, { cache: 'reload' }))
-          if (!res.ok) return
-          if (url === '/') shellHtml = await res.clone().text()
-          await cache.put(url, res)
-        }),
-      )
+      // refetches rather than re-storing a stale copy.
+      const [shellHtml] = await Promise.all([precacheShell(), precacheStatic()])
       await precacheShellAssets(shellHtml)
       // Note: no skipWaiting() here. A waiting worker is surfaced to the user
       // as an "Update available" toast; taking over mid-session would swap the
@@ -77,6 +80,29 @@ self.addEventListener('install', (event) => {
     })(),
   )
 })
+
+/** Cache the document and hand its HTML back for asset scraping. */
+async function precacheShell() {
+  try {
+    const res = await fetch(new Request(SHELL_URL, { cache: 'reload' }))
+    if (!res.ok) return ''
+    const html = await res.clone().text()
+    await (await caches.open(SHELL_CACHE)).put(SHELL_URL, res)
+    return html
+  } catch {
+    return ''
+  }
+}
+
+async function precacheStatic() {
+  const cache = await caches.open(STATIC_CACHE)
+  await Promise.allSettled(
+    STATIC_PRECACHE_URLS.map(async (url) => {
+      const res = await fetch(new Request(url, { cache: 'reload' }))
+      if (res.ok) await cache.put(url, res)
+    }),
+  )
+}
 
 /**
  * Pull the build's entry chunks out of the shell HTML and cache them now.
@@ -120,6 +146,7 @@ self.addEventListener('activate', (event) => {
       await Promise.all([
         caches.open(ASSET_CACHE).then((c) => trim(c, MAX_ASSET_ENTRIES)),
         caches.open(FONT_CACHE).then((c) => trim(c, MAX_FONT_ENTRIES)),
+        sweepShareInbox(),
       ])
       await self.clients.claim()
     })(),
@@ -194,7 +221,15 @@ async function networkFirstDocument(req) {
     // Only 200s are worth storing; a redirect cached as the shell is a trap
     // (a redirected Response cannot be returned for a navigation).
     if (res.ok && res.type === 'basic' && !res.redirected) {
-      cache.put('/', res.clone()).catch(() => {})
+      cache.put(SHELL_URL, res.clone()).catch(() => {})
+    }
+    // A 5xx means the ORIGIN is unwell, not that the app is — and the app is
+    // entirely client-side. Serving the cached shell through a deploy blip or
+    // an edge hiccup is strictly better than showing the host's error page.
+    // Client errors (404/410) are left alone: those are answers, not outages.
+    if (res.status >= 500) {
+      const cached = await cache.match(SHELL_URL)
+      if (cached) return cached
     }
     return res
   } catch {
@@ -281,6 +316,18 @@ const SHARE_TARGET_PATH = '/share-target'
 const SHARE_INBOX_PREFIX = '/__shared-media/'
 const SHARE_FLAG = 'share-target'
 
+/**
+ * How long a parked share stays claimable. A share is meant to be consumed by
+ * the launch it triggers, so this is generous, not permissive.
+ *
+ * It exists because the inbox holds WHOLE VIDEO FILES. Share a 1.5 GB clip,
+ * then kill the app before the editor drains it, and without an expiry that
+ * blob sits in Cache storage forever — eating the origin quota until IndexedDB
+ * asset persistence starts failing. The page enforces the same window on read
+ * (`lib/pwa/shareTarget.ts`), and `sweepShareInbox` collects the rest.
+ */
+const SHARE_TTL_MS = 10 * 60 * 1000
+
 async function handleShareTarget(req) {
   try {
     const form = await req.formData()
@@ -289,6 +336,7 @@ async function handleShareTarget(req) {
       const cache = await caches.open(SHARE_CACHE)
       // Drop anything a previous, abandoned share left behind.
       for (const key of await cache.keys()) await cache.delete(key)
+      const sharedAt = String(Date.now())
       await Promise.all(
         files.map((file, i) =>
           cache.put(
@@ -297,6 +345,7 @@ async function handleShareTarget(req) {
               headers: {
                 'Content-Type': file.type || 'application/octet-stream',
                 'X-Filename': encodeURIComponent(file.name || `shared-${i}`),
+                'X-Shared-At': sharedAt,
               },
             }),
           ),
@@ -307,6 +356,28 @@ async function handleShareTarget(req) {
     // A malformed share must still land the user in the editor.
   }
   return Response.redirect(`/?${SHARE_FLAG}=1`, 303)
+}
+
+/**
+ * Delete expired inbox entries. The page drains the inbox on every launch, so
+ * this is the backstop for the case where it never gets one — shared, then the
+ * app was never opened. Runs on activate.
+ */
+async function sweepShareInbox() {
+  try {
+    const cache = await caches.open(SHARE_CACHE)
+    const now = Date.now()
+    await Promise.all(
+      (await cache.keys()).map(async (key) => {
+        const res = await cache.match(key)
+        const at = Number(res?.headers.get('X-Shared-At') ?? 0)
+        // A missing/garbage timestamp predates this scheme — collect it.
+        if (!at || now - at > SHARE_TTL_MS) await cache.delete(key)
+      }),
+    )
+  } catch {
+    // Storage trouble here must never fail activate.
+  }
 }
 
 // --- offline fallback ------------------------------------------------------

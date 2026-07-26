@@ -23,6 +23,7 @@ import {
   SHARE_TARGET_PATH,
   SW_URL,
 } from './constants'
+import { SHARE_TTL_MS } from './shareTarget'
 import { THEME_COLOR } from '@/lib/theme'
 
 const publicDir = resolve(import.meta.dirname, '../../../public')
@@ -53,7 +54,38 @@ describe('service worker constants', () => {
   ])('public/sw.js declares %s with the same value', (name, expected) => {
     expect(swConst(name)).toBe(expected)
   })
+
+  // Both sides drop expired shares. If the page's window were the longer one it
+  // would hand the importer files the worker had already collected.
+  it('agrees with the page on how long a parked share stays claimable', () => {
+    const swTtl = /^const SHARE_TTL_MS = ([\d *]+)$/m.exec(swSource)?.[1]
+    expect(swTtl).toBeDefined()
+    expect(evalProduct(swTtl!)).toBe(SHARE_TTL_MS)
+  })
+
+  // The precached static files must land in the cache the fetch handler READS
+  // for them, or they are dead bytes — `isStaticAsset` routes to STATIC_CACHE.
+  it('precaches icons and the manifest into STATIC_CACHE', () => {
+    expect(swSource).toMatch(/const cache = await caches\.open\(STATIC_CACHE\)/)
+    expect(swSource).toContain('STATIC_PRECACHE_URLS.map')
+    // Every precached path must actually match the static-asset predicate.
+    const urls = /const STATIC_PRECACHE_URLS = \[([^\]]*)\]/.exec(swSource)?.[1]
+    const paths = [...(urls ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+    expect(paths.length).toBeGreaterThan(0)
+    for (const path of paths) {
+      expect(
+        /\.(png|jpg|jpeg|webp|gif|svg|ico|webmanifest|woff2?)$/.test(
+          path.split('?')[0],
+        ),
+      ).toBe(true)
+    }
+  })
 })
+
+/** Evaluate a `10 * 60 * 1000`-shaped literal without running the worker. */
+function evalProduct(expr: string): number {
+  return expr.split('*').reduce((acc, n) => acc * Number(n.trim()), 1)
+}
 
 describe('web app manifest', () => {
   it('posts shares to the path the worker intercepts', () => {

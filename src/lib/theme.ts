@@ -53,9 +53,30 @@ function applyTheme(theme: Theme) {
   const root = document.documentElement
   root.classList.toggle('dark', theme === 'dark')
   root.style.colorScheme = theme
+  setMetaThemeColor(theme)
+  listeners.forEach((l) => l())
+}
+
+function setMetaThemeColor(theme: Theme) {
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) meta.setAttribute('content', THEME_COLOR[theme])
-  listeners.forEach((l) => l())
+}
+
+/**
+ * Point the `theme-color` meta at the theme the document is ACTUALLY showing.
+ *
+ * The anti-FOUC script in `__root.tsx` picks the theme before first paint, but
+ * it only sets the class and `colorScheme` — the meta keeps its server-rendered
+ * dark value. Nothing else corrected it: `applyTheme` runs only from an explicit
+ * toggle or an OS appearance CHANGE, so a light-appearance user who never
+ * touched the toggle kept a dark bar all session. In an installed PWA that is a
+ * dark band across the top of a white TopBar on every launch, because
+ * `apple-mobile-web-app-status-bar-style: default` tints the status bar from
+ * exactly this tag. Called once on mount by `useTheme`.
+ */
+export function syncMetaThemeColor(): void {
+  if (typeof document === 'undefined') return
+  setMetaThemeColor(getAppliedTheme())
 }
 
 /** Set the theme as an explicit user choice (persisted, overrides system). */
