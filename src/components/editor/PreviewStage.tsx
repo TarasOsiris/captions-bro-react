@@ -16,11 +16,11 @@ import {
   applyRotation,
   applyScale,
   cropInsets,
-  croppedRect,
   placeRect,
   rectPoint,
+  visibleRect,
 } from '@/lib/transform'
-import type { CropInsets } from '@/lib/transform'
+import type { CropInsets, RectAnchor } from '@/lib/transform'
 import type { DrawItem, RenderSource } from '@/lib/render/compositor'
 import type { MediaPool } from '@/lib/render/mediaPool'
 import type { Clip, MediaAsset, TextStyle, Transform } from '@/lib/model/types'
@@ -51,74 +51,54 @@ interface HandleDef {
   x: number
   y: number
   cursor: string
-  /** 'scale' = uniform zoom (media) · 'fontScale' = type size (text) ·
-   *  'crop' = trim that edge (media) · 'wrap' = wrap width (text). */
-  role: 'scale' | 'fontScale' | 'crop' | 'wrap'
+  /** 'corner' = resize (media zooms, text grows its type — see the `corner`
+   *  gesture) · 'crop' = trim that edge (media) · 'wrap' = wrap width (text). */
+  role: 'corner' | 'crop' | 'wrap'
   edge?: keyof CropInsets
   side?: 'left' | 'right'
 }
 
+const CORNER_HANDLES: HandleDef[] = [
+  { x: 0, y: 0, cursor: 'nwse-resize', role: 'corner' },
+  { x: 1, y: 0, cursor: 'nesw-resize', role: 'corner' },
+  { x: 1, y: 1, cursor: 'nwse-resize', role: 'corner' },
+  { x: 0, y: 1, cursor: 'nesw-resize', role: 'corner' },
+]
+
 const MEDIA_HANDLES: HandleDef[] = [
   // Edges FIRST, corners last: their expanded hit areas overlap once the media
-  // box is narrow, and paint order decides the winner. Scale (corners) is the
+  // box is narrow, and paint order decides the winner. Resize (corners) is the
   // more commonly wanted gesture, so it must be on top.
   { x: 0.5, y: 0, cursor: 'ns-resize', role: 'crop', edge: 'top' },
   { x: 1, y: 0.5, cursor: 'ew-resize', role: 'crop', edge: 'right' },
   { x: 0.5, y: 1, cursor: 'ns-resize', role: 'crop', edge: 'bottom' },
   { x: 0, y: 0.5, cursor: 'ew-resize', role: 'crop', edge: 'left' },
-  { x: 0, y: 0, cursor: 'nwse-resize', role: 'scale' },
-  { x: 1, y: 0, cursor: 'nesw-resize', role: 'scale' },
-  { x: 1, y: 1, cursor: 'nwse-resize', role: 'scale' },
-  { x: 0, y: 1, cursor: 'nesw-resize', role: 'scale' },
+  ...CORNER_HANDLES,
 ]
 
 /**
  * Text has no croppable source and no honest vertical resize — its box height is
  * content-driven — so the top/bottom midpoints are dropped entirely. The side
- * midpoints set the WRAP WIDTH instead, and the corners scale the type rather
- * than `transform.scale`, so the inspector's Size field stays the single
- * authority for how big the text is.
+ * midpoints set the WRAP WIDTH instead; the corners are the same handles as
+ * media's, and the `corner` gesture is what routes their drag into `fontSize`
+ * rather than `transform.scale`.
  */
 const TEXT_HANDLES: HandleDef[] = [
   { x: 0, y: 0.5, cursor: 'ew-resize', role: 'wrap', side: 'left' },
   { x: 1, y: 0.5, cursor: 'ew-resize', role: 'wrap', side: 'right' },
-  { x: 0, y: 0, cursor: 'nwse-resize', role: 'fontScale' },
-  { x: 1, y: 0, cursor: 'nesw-resize', role: 'fontScale' },
-  { x: 1, y: 1, cursor: 'nwse-resize', role: 'fontScale' },
-  { x: 0, y: 1, cursor: 'nesw-resize', role: 'fontScale' },
+  ...CORNER_HANDLES,
 ]
 
-/**
- * What a corner-drag resize (media 'scale' and text 'fontScale' alike) needs to
- * hold the corner OPPOSITE the grabbed one still, the way every other editor
- * resizes. The center is not a fixed point of the gesture, so it can't be the
- * reference: both the scale factor and the re-placement are measured against the
- * anchor instead.
- */
-interface CornerAnchor {
-  /** The opposite corner in FRAME-local px — the point that must not move.
-   *  Frame-local, not client, so a scroll mid-gesture can't shift it. */
-  anchorX: number
-  anchorY: number
-  /** Its fractional position on the box, to re-pin it after each resize. */
-  anchorFx: number
-  anchorFy: number
-  /** Pointer→anchor distance at gesture start (the box diagonal). */
-  startDist: number
-}
-
-/** The resize factor a corner drag is currently asking for: how much farther the
- *  pointer is from the pinned corner than it was when the drag began. */
-function anchorDrag(
-  g: CornerAnchor,
+/** Pointer→anchor distance, converting the pointer into the frame-local space
+ *  the anchor is stored in. The ratio of two of these IS the resize factor. */
+function anchorDist(
   e: React.PointerEvent,
   fr: DOMRect,
+  anchor: { x: number; y: number },
 ): number {
-  return (
-    Math.hypot(
-      e.clientX - fr.left - g.anchorX,
-      e.clientY - fr.top - g.anchorY,
-    ) / g.startDist
+  return Math.hypot(
+    e.clientX - fr.left - anchor.x,
+    e.clientY - fr.top - anchor.y,
   )
 }
 
@@ -139,7 +119,26 @@ type Gesture =
       startX: number
       startY: number
     })
-  | (GestureBase & CornerAnchor & { kind: 'scale' })
+  /**
+   * A corner drag: resize while holding the corner OPPOSITE the grabbed one
+   * still, the way every other editor does. The center is not a fixed point of
+   * this gesture, so it can't be the reference — both the factor and the
+   * re-placement are measured against `anchor` instead.
+   *
+   * ONE gesture for media and text. What differs is only which field absorbs the
+   * factor: `transform.scale`, or `fontSize` when `startFontSize` is set (text
+   * keeps `scale` at 1 so the inspector's Size field stays the one authority).
+   */
+  | (GestureBase & {
+      kind: 'corner'
+      /** The pinned corner, in FRAME-local px — not client, so a scroll
+       *  mid-gesture can't shift it — plus where it sits on the box. */
+      anchor: RectAnchor
+      /** Pointer→anchor distance at gesture start (the box diagonal). */
+      startDist: number
+      /** Text only; null routes the drag into `transform.scale` instead. */
+      startFontSize: number | null
+    })
   | (GestureBase & {
       kind: 'rotate'
       centerX: number
@@ -157,8 +156,6 @@ type Gesture =
       /** Media rotation (rad) — the drag is projected onto its local axes. */
       rotationRad: number
     })
-  // Text-only. Geometrically identical to 'scale', but commits `fontSize`.
-  | (GestureBase & CornerAnchor & { kind: 'fontScale'; startFontSize: number })
   // Text-only. Projects the drag onto the block's local x axis, like 'crop'.
   | (GestureBase & {
       kind: 'wrap'
@@ -370,18 +367,16 @@ export function PreviewStage({
   }
 
   // Selection-chrome geometry for the selected clip (paused only) — the VISIBLE
-  // (cropped) box, so the handles sit on the trimmed edges. Text never sets
-  // crop, so `croppedRect` is the identity for it.
+  // box, so the handles sit on the trimmed edges. Text never sets crop, so the
+  // crop step is the identity for it.
   const rect =
     selectedClip && selectedSize && frameSize.w > 0
-      ? croppedRect(
-          placeRect(
-            selectedClip.transform,
-            selectedSize.w,
-            selectedSize.h,
-            frameSize.w,
-            frameSize.h,
-          ),
+      ? visibleRect(
+          selectedClip.transform,
+          selectedSize.w,
+          selectedSize.h,
+          frameSize.w,
+          frameSize.h,
         )
       : null
 
@@ -411,9 +406,7 @@ export function PreviewStage({
     if (!el) return false
     const fr = el.getBoundingClientRect()
     // Hit-test the visible (cropped) box, so trimmed-away regions aren't grabbable.
-    const r = croppedRect(
-      placeRect(transform, size.w, size.h, fr.width, fr.height),
-    )
+    const r = visibleRect(transform, size.w, size.h, fr.width, fr.height)
     const dx = clientX - fr.left - r.cx
     const dy = clientY - fr.top - r.cy
     const rad = (-r.rotationDeg * Math.PI) / 180
@@ -451,70 +444,38 @@ export function PreviewStage({
     })
   }
 
-  /** The corner opposite `h`, measured off the live frame: where it sits now
-   *  (frame-local px), which fraction of the box that is, and how far the
-   *  pointer starts from it. Shared by both corner gestures. */
-  const cornerAnchorFor = (
-    h: HandleDef,
-    e: React.PointerEvent,
-  ): CornerAnchor | null => {
+  /** Corner drag. The anchor is the corner OPPOSITE `h`, measured off the live
+   *  frame: where it sits now (frame-local px) and which fraction of the box
+   *  that is, so the move handler can put it back after every resize. */
+  const beginCorner = (e: React.PointerEvent, h: HandleDef) => {
+    e.stopPropagation()
+    if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip) return null
+    if (!el || !selectedClip) return
     const fr = el.getBoundingClientRect()
     const size = naturalSizeFor(selectedClip, fr.width, fr.height)
-    if (!size) return null
+    if (!size) return
     const fx = 1 - h.x
     const fy = 1 - h.y
-    const a = rectPoint(
-      croppedRect(
-        placeRect(selectedClip.transform, size.w, size.h, fr.width, fr.height),
-      ),
+    const p = rectPoint(
+      visibleRect(selectedClip.transform, size.w, size.h, fr.width, fr.height),
       fx,
       fy,
     )
-    const startDist = Math.hypot(
-      e.clientX - fr.left - a.x,
-      e.clientY - fr.top - a.y,
-    )
-    if (startDist <= 0) return null
-    return { anchorX: a.x, anchorY: a.y, anchorFx: fx, anchorFy: fy, startDist }
-  }
-
-  const beginScale = (e: React.PointerEvent, h: HandleDef) => {
-    e.stopPropagation()
-    if (!canBeginGesture(e)) return
-    const el = frameRef.current
-    if (!el || !selectedClip) return
-    const anchor = cornerAnchorFor(h, e)
-    if (!anchor) return
+    const anchor = { fx, fy, ...p }
+    const startDist = anchorDist(e, fr, anchor)
+    if (startDist <= 0) return
     onEditStart()
     gestureRef.current = {
-      kind: 'scale',
+      kind: 'corner',
       pointerId: e.pointerId,
       clipId: selectedClip.id,
-      ...anchor,
-      start: selectedClip.transform,
-    }
-    startGesture(el, e, h.cursor)
-  }
-
-  /** Corner drag on a TEXT clip. Same anchored geometry as `beginScale`, but it
-   *  commits `fontSize` — so `transform.scale` stays 1 and the inspector's Size
-   *  field remains the one number that says how big the text is. */
-  const beginFontScale = (e: React.PointerEvent, h: HandleDef) => {
-    e.stopPropagation()
-    if (!canBeginGesture(e)) return
-    const el = frameRef.current
-    if (!el || !selectedClip) return
-    const anchor = cornerAnchorFor(h, e)
-    if (!anchor) return
-    onEditStart()
-    gestureRef.current = {
-      kind: 'fontScale',
-      pointerId: e.pointerId,
-      clipId: selectedClip.id,
-      ...anchor,
-      startFontSize: withTextDefaults(selectedClip.textStyle).fontSize,
+      anchor,
+      startDist,
+      startFontSize:
+        selectedClip.type === 'text'
+          ? withTextDefaults(selectedClip.textStyle).fontSize
+          : null,
       start: selectedClip.transform,
     }
     startGesture(el, e, h.cursor)
@@ -681,62 +642,44 @@ export function PreviewStage({
           (e.clientY - g.startY) / fr.height,
         ),
       )
-    } else if (g.kind === 'scale') {
-      const fr = el.getBoundingClientRect()
-      const clip = clipById(useEditorStore.getState().project, g.clipId)
-      const size = clip && naturalSizeFor(clip, fr.width, fr.height)
-      if (!size) return
-      const scaled = applyScale(g.start, anchorDrag(g, e, fr))
-      // Resize about the center, then slide the result back so the opposite
-      // corner returns to where it was. `applyScale` may have clamped, and
-      // re-pinning after the fact rather than predicting the factor is what
-      // keeps the anchor exact when it does.
-      setClipTransform(
-        g.clipId,
-        anchorRectAt(
-          scaled,
-          size.w,
-          size.h,
-          fr.width,
-          fr.height,
-          g.anchorFx,
-          g.anchorFy,
-          { x: g.anchorX, y: g.anchorY },
-        ),
-      )
-    } else if (g.kind === 'fontScale') {
+    } else if (g.kind === 'corner') {
       const fr = el.getBoundingClientRect()
       const clip = clipById(useEditorStore.getState().project, g.clipId)
       if (!clip) return
-      // Every text metric is em-relative, so scaling the font size scales the
-      // whole block — the same visual result `transform.scale` would give, but
-      // expressed in the one number the inspector also edits.
-      const textStyle = {
-        ...withTextDefaults(clip.textStyle),
-        fontSize: clampNumber(
-          g.startFontSize * anchorDrag(g, e, fr),
-          MIN_FONT_SIZE,
-          MAX_FONT_SIZE,
-        ),
-      }
-      // Lay the block out at the NEW size before re-pinning: a wider font wraps
-      // differently, so the box height is not a multiple of the old one.
-      const size = naturalSizeFor({ ...clip, textStyle }, fr.width, fr.height)
+      const factor = anchorDist(e, fr, g.anchor) / g.startDist
+      // Media zooms; text grows its type instead. Every text metric is
+      // em-relative, so scaling the font scales the whole block identically —
+      // but expressed in the one number the inspector also edits.
+      const resized: Partial<Clip> =
+        g.startFontSize == null
+          ? { transform: applyScale(g.start, factor) }
+          : {
+              textStyle: {
+                ...withTextDefaults(clip.textStyle),
+                fontSize: clampNumber(
+                  g.startFontSize * factor,
+                  MIN_FONT_SIZE,
+                  MAX_FONT_SIZE,
+                ),
+              },
+            }
+      // Measure the RESIZED clip before re-pinning. Text re-wraps at a new font
+      // size, so its box height is not a multiple of the old one — and neither
+      // clamp (scale or font size) may have granted the whole factor.
+      const size = naturalSizeFor({ ...clip, ...resized }, fr.width, fr.height)
       if (!size) return
-      // Style and placement move as ONE store write — two would let the
-      // compositor's rAF land between them and draw a frame at the new size in
+      // Resize and re-placement land as ONE store write — two would let the
+      // compositor's rAF fall between them and draw a frame at the new size in
       // the old position, which reads as a jitter along the drag.
       useEditorStore.getState().updateClip(g.clipId, {
-        textStyle,
+        ...resized,
         transform: anchorRectAt(
-          g.start,
+          resized.transform ?? g.start,
           size.w,
           size.h,
           fr.width,
           fr.height,
-          g.anchorFx,
-          g.anchorFy,
-          { x: g.anchorX, y: g.anchorY },
+          g.anchor,
         ),
       })
     } else if (g.kind === 'wrap') {
@@ -903,12 +846,12 @@ export function PreviewStage({
             {(isText ? TEXT_HANDLES : MEDIA_HANDLES).map((h) => {
               // Corner roles (scale/fontScale) → round dot; edge roles
               // (crop/wrap) → a small bar lying along that edge.
-              const isCorner = h.role === 'scale' || h.role === 'fontScale'
-              const shape = isCorner
-                ? 'h-3.5 w-3.5 rounded-full'
-                : h.edge === 'top' || h.edge === 'bottom'
-                  ? 'h-1.5 w-3 rounded-[2px]'
-                  : 'h-3 w-1.5 rounded-[2px]'
+              const shape =
+                h.role === 'corner'
+                  ? 'h-3.5 w-3.5 rounded-full'
+                  : h.edge === 'top' || h.edge === 'bottom'
+                    ? 'h-1.5 w-3 rounded-[2px]'
+                    : 'h-3 w-1.5 rounded-[2px]'
               return (
                 <span
                   key={`${h.role}-${h.x.toString()}-${h.y.toString()}`}
@@ -917,8 +860,7 @@ export function PreviewStage({
                       beginCrop(e, h.edge, h.cursor)
                     else if (h.role === 'wrap' && h.side)
                       beginWrap(e, h.side, h.cursor)
-                    else if (h.role === 'fontScale') beginFontScale(e, h)
-                    else beginScale(e, h)
+                    else beginCorner(e, h)
                   }}
                   style={{
                     left: `${(h.x * 100).toString()}%`,

@@ -145,22 +145,50 @@ export function mediaRect(
  */
 export function croppedRect(r: MediaRect): MediaRect {
   const c = r.crop
-  const w = r.w * (1 - c.left - c.right)
-  const h = r.h * (1 - c.top - c.bottom)
+  // Most rects are uncropped (text never crops at all) and this runs per frame
+  // for the selection chrome and per pointermove for the hit test.
+  if (!c.left && !c.right && !c.top && !c.bottom) return { ...r, crop: NO_CROP }
   // Center offset in the media's LOCAL (unrotated) frame, then rotated into canvas space.
-  const ox = (r.w * (c.left - c.right)) / 2
-  const oy = (r.h * (c.top - c.bottom)) / 2
-  const rad = (r.rotationDeg * Math.PI) / 180
-  const cos = Math.cos(rad)
-  const sin = Math.sin(rad)
+  const p = fromCenter(
+    r,
+    (r.w * (c.left - c.right)) / 2,
+    (r.h * (c.top - c.bottom)) / 2,
+  )
   return {
-    cx: r.cx + ox * cos - oy * sin,
-    cy: r.cy + ox * sin + oy * cos,
-    w,
-    h,
+    cx: p.x,
+    cy: p.y,
+    w: r.w * (1 - c.left - c.right),
+    h: r.h * (1 - c.top - c.bottom),
     rotationDeg: r.rotationDeg,
     crop: NO_CROP,
   }
+}
+
+/** The VISIBLE box of a placed source: `placeRect`, then its crop applied. What
+ *  the selection chrome, the hit test and a corner anchor all want — as opposed
+ *  to the FULL rect a crop drag measures its insets against. */
+export function visibleRect(
+  transform: Transform,
+  naturalW: number,
+  naturalH: number,
+  canvasW: number,
+  canvasH: number,
+): MediaRect {
+  return croppedRect(placeRect(transform, naturalW, naturalH, canvasW, canvasH))
+}
+
+/** A local (unrotated) offset from a rect's center, rotated into canvas space.
+ *  The module's ONE rotation matrix — `hitTestClip` inverts it, nothing else
+ *  should restate it. */
+function fromCenter(
+  r: MediaRect,
+  lx: number,
+  ly: number,
+): { x: number; y: number } {
+  const rad = (r.rotationDeg * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  return { x: r.cx + lx * cos - ly * sin, y: r.cy + lx * sin + ly * cos }
 }
 
 /**
@@ -173,18 +201,24 @@ export function rectPoint(
   fx: number,
   fy: number,
 ): { x: number; y: number } {
-  const rad = (r.rotationDeg * Math.PI) / 180
-  const lx = (fx - 0.5) * r.w
-  const ly = (fy - 0.5) * r.h
-  return {
-    x: r.cx + lx * Math.cos(rad) - ly * Math.sin(rad),
-    y: r.cy + lx * Math.sin(rad) + ly * Math.cos(rad),
-  }
+  return fromCenter(r, (fx - 0.5) * r.w, (fy - 0.5) * r.h)
 }
 
 /**
- * Translate `t` so that the `(fx, fy)` point of its VISIBLE (cropped) box lands
- * exactly on `anchor` (canvas pixels).
+ * A point of a rect named twice over: where it sits ON the box (`fx`/`fy`
+ * fractions) and where that has to LAND in canvas pixels. One object rather than
+ * four adjacent numbers, which would transpose silently.
+ */
+export interface RectAnchor {
+  fx: number
+  fy: number
+  x: number
+  y: number
+}
+
+/**
+ * Translate `t` so that the anchor's `(fx, fy)` point of its VISIBLE box lands
+ * exactly on the anchor's `(x, y)`.
  *
  * This is what makes a corner drag resize AGAINST the opposite corner instead of
  * about the center: resize first, then re-pin the corner that must not move.
@@ -198,14 +232,12 @@ export function anchorRectAt(
   naturalH: number,
   canvasW: number,
   canvasH: number,
-  fx: number,
-  fy: number,
-  anchor: { x: number; y: number },
+  anchor: RectAnchor,
 ): Transform {
   const p = rectPoint(
-    croppedRect(placeRect(t, naturalW, naturalH, canvasW, canvasH)),
-    fx,
-    fy,
+    visibleRect(t, naturalW, naturalH, canvasW, canvasH),
+    anchor.fx,
+    anchor.fy,
   )
   return {
     ...t,

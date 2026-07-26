@@ -11,7 +11,9 @@ import {
   mediaRect,
   placeRect,
   rectPoint,
+  visibleRect,
 } from './transform'
+import type { RectAnchor, Transform } from './transform'
 
 describe('mediaRect — the WYSIWYG geometry (preview == export)', () => {
   const W = 1920
@@ -184,29 +186,41 @@ describe('corner resize anchors the OPPOSITE corner, never the center', () => {
   const ASPECT = 4 / 3
   const fit = containFit(ASPECT, W, H)
 
-  /** The (fx, fy) corner of the visible box under `t`. */
+  /** The (fx, fy) corner of the visible box under `t`, at a given natural size. */
   const corner = (
-    t: Parameters<typeof anchorRectAt>[0],
+    t: Transform,
     fx: number,
     fy: number,
-  ) => rectPoint(croppedRect(placeRect(t, fit.w, fit.h, W, H)), fx, fy)
+    size = fit,
+  ): RectAnchor => ({
+    fx,
+    fy,
+    ...rectPoint(visibleRect(t, size.w, size.h, W, H), fx, fy),
+  })
+
+  /**
+   * The whole contract in one line: pin the (fx, fy) corner of `start`, resize
+   * to `next` (any transform, any natural size), and that corner has not moved.
+   * Returns the re-pinned transform so a test can assert more about it.
+   */
+  const repin = (
+    start: Transform,
+    fx: number,
+    fy: number,
+    next: Transform,
+    size = fit,
+  ) => {
+    const anchor = corner(start, fx, fy)
+    const out = anchorRectAt(next, size.w, size.h, W, H, anchor)
+    const after = corner(out, fx, fy, size)
+    expect(after.x).toBeCloseTo(anchor.x)
+    expect(after.y).toBeCloseTo(anchor.y)
+    return out
+  }
 
   it('holds the top-left corner while the bottom-right one is dragged out', () => {
     const start = { ...IDENTITY, tx: 0.1, ty: -0.05 }
-    const anchor = corner(start, 0, 0)
-    const next = anchorRectAt(
-      applyScale(start, 2),
-      fit.w,
-      fit.h,
-      W,
-      H,
-      0,
-      0,
-      anchor,
-    )
-    const after = corner(next, 0, 0)
-    expect(after.x).toBeCloseTo(anchor.x)
-    expect(after.y).toBeCloseTo(anchor.y)
+    const next = repin(start, 0, 0, applyScale(start, 2))
     // ...and the center genuinely moved, i.e. this is not the old behaviour.
     expect(next.tx).not.toBeCloseTo(start.tx)
     expect(next.ty).not.toBeCloseTo(start.ty)
@@ -214,57 +228,30 @@ describe('corner resize anchors the OPPOSITE corner, never the center', () => {
 
   it('anchors in the ROTATED frame, not the screen-axis one', () => {
     const start = { ...IDENTITY, rotationDeg: 37 }
-    const anchor = corner(start, 1, 0) // dragging the bottom-left handle
-    const next = anchorRectAt(
-      applyScale(start, 0.4),
-      fit.w,
-      fit.h,
-      W,
-      H,
-      1,
-      0,
-      anchor,
-    )
-    const after = corner(next, 1, 0)
-    expect(after.x).toBeCloseTo(anchor.x)
-    expect(after.y).toBeCloseTo(anchor.y)
+    repin(start, 1, 0, applyScale(start, 0.4)) // dragging the bottom-left handle
   })
 
   it('anchors the visible box, so a cropped rect pins its trimmed corner', () => {
     const start = applyCrop(applyCrop(IDENTITY, 'left', 0.3), 'top', 0.2)
-    const anchor = corner(start, 1, 1)
-    const next = anchorRectAt(
-      applyScale(start, 1.6),
-      fit.w,
-      fit.h,
-      W,
-      H,
-      1,
-      1,
-      anchor,
-    )
-    const after = corner(next, 1, 1)
-    expect(after.x).toBeCloseTo(anchor.x)
-    expect(after.y).toBeCloseTo(anchor.y)
+    repin(start, 1, 1, applyScale(start, 1.6))
   })
 
   it('re-pins exactly when the new size is NOT a multiple of the old one — the text re-wrap case', () => {
     // A bigger font at a fixed wrap width adds a line: width pinned, height +50%.
+    // The anchor is read off the OLD box, the re-pin measured against the new.
     const start = { ...IDENTITY, ty: 0.2 }
-    const before = { w: 600, h: 200 }
-    const anchor = rectPoint(placeRect(start, before.w, before.h, W, H), 0, 1)
-    const next = anchorRectAt(start, 600, 300, W, H, 0, 1, anchor)
-    const after = rectPoint(placeRect(next, 600, 300, W, H), 0, 1)
+    const anchor = corner(start, 0, 1, { w: 600, h: 200 })
+    const next = anchorRectAt(start, 600, 300, W, H, anchor)
+    const after = rectPoint(visibleRect(next, 600, 300, W, H), 0, 1)
     expect(after.x).toBeCloseTo(anchor.x)
     expect(after.y).toBeCloseTo(anchor.y)
   })
 
   it('keeps the anchor put when the scale clamp refuses the drag', () => {
     const start = { ...IDENTITY, scale: 10 } // already at MAX_SCALE
-    const anchor = corner(start, 0, 0)
     const scaled = applyScale(start, 3)
     expect(scaled.scale).toBe(10) // clamped — nothing should move at all
-    const next = anchorRectAt(scaled, fit.w, fit.h, W, H, 0, 0, anchor)
+    const next = repin(start, 0, 0, scaled)
     expect(next.tx).toBeCloseTo(start.tx)
     expect(next.ty).toBeCloseTo(start.ty)
   })
