@@ -163,6 +163,57 @@ export function croppedRect(r: MediaRect): MediaRect {
   }
 }
 
+/**
+ * The point at fractional position `(fx, fy)` of a placed rect — (0,0) its
+ * top-left corner, (1,1) its bottom-right — in canvas pixels, with the rect's
+ * own rotation applied. Corner handles read their geometric position from here.
+ */
+export function rectPoint(
+  r: MediaRect,
+  fx: number,
+  fy: number,
+): { x: number; y: number } {
+  const rad = (r.rotationDeg * Math.PI) / 180
+  const lx = (fx - 0.5) * r.w
+  const ly = (fy - 0.5) * r.h
+  return {
+    x: r.cx + lx * Math.cos(rad) - ly * Math.sin(rad),
+    y: r.cy + lx * Math.sin(rad) + ly * Math.cos(rad),
+  }
+}
+
+/**
+ * Translate `t` so that the `(fx, fy)` point of its VISIBLE (cropped) box lands
+ * exactly on `anchor` (canvas pixels).
+ *
+ * This is what makes a corner drag resize AGAINST the opposite corner instead of
+ * about the center: resize first, then re-pin the corner that must not move.
+ * Note it re-derives the box from the natural size passed in rather than scaling
+ * the previous one — that is what keeps it honest for text, whose height jumps a
+ * whole line the moment a bigger font re-wraps the block.
+ */
+export function anchorRectAt(
+  t: Transform,
+  naturalW: number,
+  naturalH: number,
+  canvasW: number,
+  canvasH: number,
+  fx: number,
+  fy: number,
+  anchor: { x: number; y: number },
+): Transform {
+  const p = rectPoint(
+    croppedRect(placeRect(t, naturalW, naturalH, canvasW, canvasH)),
+    fx,
+    fy,
+  )
+  return {
+    ...t,
+    tx: t.tx + (anchor.x - p.x) / canvasW,
+    ty: t.ty + (anchor.y - p.y) / canvasH,
+  }
+}
+
 /** Translate by fractional-of-canvas deltas. */
 export function applyMove(
   t: Transform,

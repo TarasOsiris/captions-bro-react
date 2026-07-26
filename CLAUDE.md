@@ -36,7 +36,8 @@ so it only has to generate text clips (see "Text overlays").
   primitive: it places a source of a given NATURAL size (canvas px). `mediaRect`
   is `placeRect ∘ containFit` — media contain-fits an aspect first; a laid-out
   text block reports its measured size and goes straight to `placeRect`. Never
-  add a second placement path.
+  add a second placement path. `placeRect` scales about the CENTER, so a corner
+  drag resizes and then re-pins via `anchorRectAt` (see "Corner resize").
 - `src/lib/text/` — the text layer: `layout.ts` (PURE — wrap/measure/paint, takes
   an injected `TextMeasurer` so it unit-tests in the node vitest env; don't inline
   `ctx.measureText` into it), `measure.ts` (the lazy canvas measurer + caches),
@@ -352,6 +353,32 @@ Also:
   double-tap-to-edit text editor closed itself the instant it opened until this
   was added — and it fails silently, because the state IS set, just reverted a
   tick later by the blur handler.
+
+### Corner resize is anchored on the OPPOSITE corner
+
+`transform.tx/ty` place the box by its CENTER, so scaling alone grows it in every
+direction at once — the corner you grabbed and the one across from it both run
+away from the pointer. Every editor instead pins the opposite corner, so the
+gesture is two steps and both live in `transform.ts`:
+
+- The drag factor is `dist(pointer, anchor) / dist(pointer₀, anchor)` — measured
+  from the pinned corner, never from the center.
+- Resize (`applyScale` for media, `fontSize` for text), then `anchorRectAt`
+  slides the result until the anchor's fractional point is back where it was.
+  Re-pinning AFTER the fact rather than predicting the translation is what keeps
+  it exact when `applyScale`'s clamp refuses part of the drag.
+
+`anchorRectAt` re-derives the box from a natural size passed in, which is why it
+survives text: a bigger font at a fixed `boxWidth` **re-wraps**, so the block's
+new height is not a multiple of the old one and no similarity-transform shortcut
+works. `fontScale` therefore lays the block out at the new size BEFORE placing
+it, and writes style + transform in ONE `updateClip` — two writes let the rAF
+compositor draw a frame at the new size in the old spot, which reads as jitter.
+The anchor is stored in FRAME-local px (a scroll mid-gesture must not move it)
+and is a point on the CROPPED box, so a trimmed media rect pins its visible
+corner. The side/edge handles are unaffected: `crop` already anchors its opposite
+edge by construction (`croppedRect` shifts the center toward the kept side), and
+`wrap` still widens about the center.
 
 ### Hit areas grow via a transparent `::after`, not size bumps
 

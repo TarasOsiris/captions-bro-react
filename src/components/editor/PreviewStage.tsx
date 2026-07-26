@@ -10,6 +10,7 @@ import { clipNaturalSize, textSourceForClip } from '@/lib/render/textSource'
 import { CanvasTextEditor } from '@/components/editor/CanvasTextEditor'
 import { withTextDefaults } from '@/lib/model/text'
 import {
+  anchorRectAt,
   applyCrop,
   applyMove,
   applyRotation,
@@ -17,6 +18,7 @@ import {
   cropInsets,
   croppedRect,
   placeRect,
+  rectPoint,
 } from '@/lib/transform'
 import type { CropInsets } from '@/lib/transform'
 import type { DrawItem, RenderSource } from '@/lib/render/compositor'
@@ -86,6 +88,40 @@ const TEXT_HANDLES: HandleDef[] = [
   { x: 0, y: 1, cursor: 'nesw-resize', role: 'fontScale' },
 ]
 
+/**
+ * What a corner-drag resize (media 'scale' and text 'fontScale' alike) needs to
+ * hold the corner OPPOSITE the grabbed one still, the way every other editor
+ * resizes. The center is not a fixed point of the gesture, so it can't be the
+ * reference: both the scale factor and the re-placement are measured against the
+ * anchor instead.
+ */
+interface CornerAnchor {
+  /** The opposite corner in FRAME-local px — the point that must not move.
+   *  Frame-local, not client, so a scroll mid-gesture can't shift it. */
+  anchorX: number
+  anchorY: number
+  /** Its fractional position on the box, to re-pin it after each resize. */
+  anchorFx: number
+  anchorFy: number
+  /** Pointer→anchor distance at gesture start (the box diagonal). */
+  startDist: number
+}
+
+/** The resize factor a corner drag is currently asking for: how much farther the
+ *  pointer is from the pinned corner than it was when the drag began. */
+function anchorDrag(
+  g: CornerAnchor,
+  e: React.PointerEvent,
+  fr: DOMRect,
+): number {
+  return (
+    Math.hypot(
+      e.clientX - fr.left - g.anchorX,
+      e.clientY - fr.top - g.anchorY,
+    ) / g.startDist
+  )
+}
+
 /** Fields every gesture carries. `pointerId` makes the gesture exclusive to the
  *  pointer that started it, so a second finger can neither drive nor end it. */
 interface GestureBase {
@@ -103,12 +139,7 @@ type Gesture =
       startX: number
       startY: number
     })
-  | (GestureBase & {
-      kind: 'scale'
-      centerX: number
-      centerY: number
-      startDist: number
-    })
+  | (GestureBase & CornerAnchor & { kind: 'scale' })
   | (GestureBase & {
       kind: 'rotate'
       centerX: number
@@ -127,13 +158,7 @@ type Gesture =
       rotationRad: number
     })
   // Text-only. Geometrically identical to 'scale', but commits `fontSize`.
-  | (GestureBase & {
-      kind: 'fontScale'
-      centerX: number
-      centerY: number
-      startDist: number
-      startFontSize: number
-    })
+  | (GestureBase & CornerAnchor & { kind: 'fontScale'; startFontSize: number })
   // Text-only. Projects the drag onto the block's local x axis, like 'crop'.
   | (GestureBase & {
       kind: 'wrap'
@@ -426,50 +451,73 @@ export function PreviewStage({
     })
   }
 
-  const beginScale = (e: React.PointerEvent, cursor: string) => {
+  /** The corner opposite `h`, measured off the live frame: where it sits now
+   *  (frame-local px), which fraction of the box that is, and how far the
+   *  pointer starts from it. Shared by both corner gestures. */
+  const cornerAnchorFor = (
+    h: HandleDef,
+    e: React.PointerEvent,
+  ): CornerAnchor | null => {
+    const el = frameRef.current
+    if (!el || !selectedClip) return null
+    const fr = el.getBoundingClientRect()
+    const size = naturalSizeFor(selectedClip, fr.width, fr.height)
+    if (!size) return null
+    const fx = 1 - h.x
+    const fy = 1 - h.y
+    const a = rectPoint(
+      croppedRect(
+        placeRect(selectedClip.transform, size.w, size.h, fr.width, fr.height),
+      ),
+      fx,
+      fy,
+    )
+    const startDist = Math.hypot(
+      e.clientX - fr.left - a.x,
+      e.clientY - fr.top - a.y,
+    )
+    if (startDist <= 0) return null
+    return { anchorX: a.x, anchorY: a.y, anchorFx: fx, anchorFy: fy, startDist }
+  }
+
+  const beginScale = (e: React.PointerEvent, h: HandleDef) => {
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip || !selectedSize) return
-    const center = centerClient(selectedClip.transform, selectedSize)
-    if (!center) return
+    if (!el || !selectedClip) return
+    const anchor = cornerAnchorFor(h, e)
+    if (!anchor) return
     onEditStart()
     gestureRef.current = {
       kind: 'scale',
       pointerId: e.pointerId,
       clipId: selectedClip.id,
-      centerX: center.x,
-      centerY: center.y,
-      startDist: Math.hypot(e.clientX - center.x, e.clientY - center.y),
+      ...anchor,
       start: selectedClip.transform,
     }
-    startGesture(el, e, cursor)
+    startGesture(el, e, h.cursor)
   }
 
-  /** Corner drag on a TEXT clip. Same distance-ratio geometry as `beginScale`,
-   *  but it commits `fontSize` — so `transform.scale` stays 1 and the inspector's
-   *  Size field remains the one number that says how big the text is. */
-  const beginFontScale = (e: React.PointerEvent, cursor: string) => {
+  /** Corner drag on a TEXT clip. Same anchored geometry as `beginScale`, but it
+   *  commits `fontSize` — so `transform.scale` stays 1 and the inspector's Size
+   *  field remains the one number that says how big the text is. */
+  const beginFontScale = (e: React.PointerEvent, h: HandleDef) => {
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
-    if (!el || !selectedClip || !selectedSize) return
-    const center = centerClient(selectedClip.transform, selectedSize)
-    if (!center) return
-    const dist = Math.hypot(e.clientX - center.x, e.clientY - center.y)
-    if (dist <= 0) return
+    if (!el || !selectedClip) return
+    const anchor = cornerAnchorFor(h, e)
+    if (!anchor) return
     onEditStart()
     gestureRef.current = {
       kind: 'fontScale',
       pointerId: e.pointerId,
       clipId: selectedClip.id,
-      centerX: center.x,
-      centerY: center.y,
-      startDist: dist,
+      ...anchor,
       startFontSize: withTextDefaults(selectedClip.textStyle).fontSize,
       start: selectedClip.transform,
     }
-    startGesture(el, e, cursor)
+    startGesture(el, e, h.cursor)
   }
 
   /** Side-midpoint drag on a TEXT clip: sets the wrap width. */
@@ -634,21 +682,63 @@ export function PreviewStage({
         ),
       )
     } else if (g.kind === 'scale') {
-      if (g.startDist > 0) {
-        const dist = Math.hypot(e.clientX - g.centerX, e.clientY - g.centerY)
-        setClipTransform(g.clipId, applyScale(g.start, dist / g.startDist))
-      }
+      const fr = el.getBoundingClientRect()
+      const clip = clipById(useEditorStore.getState().project, g.clipId)
+      const size = clip && naturalSizeFor(clip, fr.width, fr.height)
+      if (!size) return
+      const scaled = applyScale(g.start, anchorDrag(g, e, fr))
+      // Resize about the center, then slide the result back so the opposite
+      // corner returns to where it was. `applyScale` may have clamped, and
+      // re-pinning after the fact rather than predicting the factor is what
+      // keeps the anchor exact when it does.
+      setClipTransform(
+        g.clipId,
+        anchorRectAt(
+          scaled,
+          size.w,
+          size.h,
+          fr.width,
+          fr.height,
+          g.anchorFx,
+          g.anchorFy,
+          { x: g.anchorX, y: g.anchorY },
+        ),
+      )
     } else if (g.kind === 'fontScale') {
-      const dist = Math.hypot(e.clientX - g.centerX, e.clientY - g.centerY)
+      const fr = el.getBoundingClientRect()
+      const clip = clipById(useEditorStore.getState().project, g.clipId)
+      if (!clip) return
       // Every text metric is em-relative, so scaling the font size scales the
       // whole block — the same visual result `transform.scale` would give, but
       // expressed in the one number the inspector also edits.
-      const next = clampNumber(
-        (g.startFontSize * dist) / g.startDist,
-        MIN_FONT_SIZE,
-        MAX_FONT_SIZE,
-      )
-      patchTextStyle(g.clipId, { fontSize: next })
+      const textStyle = {
+        ...withTextDefaults(clip.textStyle),
+        fontSize: clampNumber(
+          g.startFontSize * anchorDrag(g, e, fr),
+          MIN_FONT_SIZE,
+          MAX_FONT_SIZE,
+        ),
+      }
+      // Lay the block out at the NEW size before re-pinning: a wider font wraps
+      // differently, so the box height is not a multiple of the old one.
+      const size = naturalSizeFor({ ...clip, textStyle }, fr.width, fr.height)
+      if (!size) return
+      // Style and placement move as ONE store write — two would let the
+      // compositor's rAF land between them and draw a frame at the new size in
+      // the old position, which reads as a jitter along the drag.
+      useEditorStore.getState().updateClip(g.clipId, {
+        textStyle,
+        transform: anchorRectAt(
+          g.start,
+          size.w,
+          size.h,
+          fr.width,
+          fr.height,
+          g.anchorFx,
+          g.anchorFy,
+          { x: g.anchorX, y: g.anchorY },
+        ),
+      })
     } else if (g.kind === 'wrap') {
       // Project the drag onto the block's local x axis, as `crop` does.
       const dx = e.clientX - g.startX
@@ -827,8 +917,8 @@ export function PreviewStage({
                       beginCrop(e, h.edge, h.cursor)
                     else if (h.role === 'wrap' && h.side)
                       beginWrap(e, h.side, h.cursor)
-                    else if (h.role === 'fontScale') beginFontScale(e, h.cursor)
-                    else beginScale(e, h.cursor)
+                    else if (h.role === 'fontScale') beginFontScale(e, h)
+                    else beginScale(e, h)
                   }}
                   style={{
                     left: `${(h.x * 100).toString()}%`,
