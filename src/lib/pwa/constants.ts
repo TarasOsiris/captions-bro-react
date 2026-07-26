@@ -2,7 +2,11 @@
 //
 // The service worker is plain, unbundled JS served straight out of `public/`,
 // so it cannot import this module — it repeats these literals with a pointer
-// back here. If you change one, change both.
+// back here, as does `site.webmanifest` (JSON, same problem).
+//
+// That duplication is NOT held together by this comment: `constants.test.ts`
+// reads both files as text and fails if any value drifts. Change one, change
+// the others, and the test will tell you if you missed one.
 
 export const SW_URL = '/sw.js'
 

@@ -10,9 +10,13 @@ const STORAGE_KEY = 'cb-theme'
 // Meta `theme-color` values, matching --surface per theme — NOT --bg. This
 // colours the mobile browser chrome and, in an installed PWA, the strip behind
 // the status bar; both sit directly above the TopBar, which is `bg-surface`.
-// Keep the dark value in sync with `theme_color` in public/site.webmanifest and
-// the SSR default in lib/seo.ts, so there's no flash on launch.
-const THEME_COLOR: Record<Theme, string> = {
+//
+// THE source of truth: `lib/seo.ts` imports these for the SSR default rather
+// than repeating the hex, so the server-rendered tag and the value this module
+// writes on mount cannot drift (the `19rem` lesson in CLAUDE.md). The one copy
+// that must stay a literal is `theme_color` in public/site.webmanifest — JSON
+// can't import TS — and it has to equal the dark value or the launch flashes.
+export const THEME_COLOR: Record<Theme, string> = {
   dark: '#1d222a',
   light: '#ffffff',
 }

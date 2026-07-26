@@ -34,22 +34,23 @@ export async function takeSharedFiles(): Promise<File[]> {
     const keys = (await cache.keys()).filter((req) =>
       new URL(req.url).pathname.startsWith(SHARE_INBOX_PREFIX),
     )
-    const files: File[] = []
-    for (const key of keys) {
-      const res = await cache.match(key)
-      if (!res) continue
-      const blob = await res.blob()
-      const name = decodeURIComponent(
-        res.headers.get('X-Filename') ?? 'shared-media',
-      )
-      files.push(
-        new File([blob], name, {
+    // Concurrently: a multi-file share otherwise serializes N cache reads on
+    // the boot path, before the importer sees the first one.
+    const files = await Promise.all(
+      keys.map(async (key) => {
+        const res = await cache.match(key)
+        if (!res) return null
+        const blob = await res.blob()
+        const name = decodeURIComponent(
+          res.headers.get('X-Filename') ?? 'shared-media',
+        )
+        return new File([blob], name, {
           type: res.headers.get('Content-Type') ?? blob.type,
-        }),
-      )
-    }
+        })
+      }),
+    )
     await Promise.all(keys.map((k) => cache.delete(k)))
-    return files
+    return files.filter((f) => f !== null)
   } catch {
     return []
   }

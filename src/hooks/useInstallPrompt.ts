@@ -16,17 +16,16 @@ export interface InstallPrompt {
 }
 
 export function useInstallPrompt(): InstallPrompt {
+  // "Installed" needs no state of its own: it is exactly "neither affordance
+  // applies", and both paths that reach it (already standalone at mount, or
+  // `appinstalled` mid-session) clear these two anyway.
   const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(
     null,
   )
-  const [installed, setInstalled] = useState(false)
   const [showIosHint, setShowIosHint] = useState(false)
 
   useEffect(() => {
-    if (isStandalone()) {
-      setInstalled(true)
-      return
-    }
+    if (isStandalone()) return
     setShowIosHint(needsIosInstallHint())
 
     const onBeforeInstall = (e: Event) => {
@@ -35,7 +34,6 @@ export function useInstallPrompt(): InstallPrompt {
       setDeferred(e as BeforeInstallPromptEvent)
     }
     const onInstalled = () => {
-      setInstalled(true)
       setDeferred(null)
       setShowIosHint(false)
     }
@@ -56,9 +54,5 @@ export function useInstallPrompt(): InstallPrompt {
     setDeferred(null)
   }, [deferred])
 
-  return {
-    canPrompt: !installed && deferred !== null,
-    showIosHint: !installed && showIosHint,
-    promptInstall,
-  }
+  return { canPrompt: deferred !== null, showIosHint, promptInstall }
 }

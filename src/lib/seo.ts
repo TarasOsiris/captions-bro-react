@@ -6,6 +6,8 @@
 // TanStack's `head()` so every tag ships in the SSR HTML on first paint (which is
 // what crawlers and social scrapers read).
 
+import { THEME_COLOR } from '@/lib/theme'
+
 export const siteUrl = 'https://editor.captionsbro.app'
 export const siteName = 'Captions Bro'
 export const appIconImage = `${siteUrl}/app-icon-512.png`
@@ -76,8 +78,8 @@ export function seo({
     { name: 'robots', content: robots },
     // SSR default (dark --surface, matching the manifest's theme_color); the
     // theme module rewrites this to the light value on mount/toggle when the
-    // applied theme is light. See THEME_COLOR in lib/theme.ts.
-    { name: 'theme-color', content: '#1d222a' },
+    // applied theme is light. Imported, never re-typed — see lib/theme.ts.
+    { name: 'theme-color', content: THEME_COLOR.dark },
     // Open Graph
     { property: 'og:site_name', content: siteName },
     { property: 'og:type', content: type },

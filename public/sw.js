@@ -116,8 +116,11 @@ self.addEventListener('activate', (event) => {
           .filter((n) => n.startsWith('cb-') && !CURRENT_CACHES.includes(n))
           .map((n) => caches.delete(n)),
       )
-      await trim(ASSET_CACHE, MAX_ASSET_ENTRIES)
-      await trim(FONT_CACHE, MAX_FONT_ENTRIES)
+      // Independent caches — nothing gained by serializing them ahead of claim().
+      await Promise.all([
+        caches.open(ASSET_CACHE).then((c) => trim(c, MAX_ASSET_ENTRIES)),
+        caches.open(FONT_CACHE).then((c) => trim(c, MAX_FONT_ENTRIES)),
+      ])
       await self.clients.claim()
     })(),
   )
@@ -213,7 +216,7 @@ async function cacheFirst(req, cacheName, max) {
   // fonts; everything else must be a real 200.
   if (res.ok || res.type === 'opaque') {
     cache.put(req, res.clone()).catch(() => {})
-    if (max) trim(cacheName, max)
+    if (max) trim(cache, max)
   }
   return res
 }
@@ -225,7 +228,7 @@ async function staleWhileRevalidate(req, cacheName, max) {
     .then((res) => {
       if (res.ok || res.type === 'opaque') {
         cache.put(req, res.clone()).catch(() => {})
-        if (max) trim(cacheName, max)
+        if (max) trim(cache, max)
       }
       return res
     })
@@ -234,10 +237,10 @@ async function staleWhileRevalidate(req, cacheName, max) {
   return cached || fresh || Response.error()
 }
 
-/** Evict oldest-first. `cache.keys()` preserves insertion order. */
-async function trim(cacheName, max) {
+/** Evict oldest-first. `cache.keys()` preserves insertion order. Takes an open
+ *  handle, not a name — every caller already has one. */
+async function trim(cache, max) {
   try {
-    const cache = await caches.open(cacheName)
     const keys = await cache.keys()
     if (keys.length <= max) return
     await Promise.all(

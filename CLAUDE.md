@@ -438,8 +438,16 @@ target use — via `useLaunchFiles`. Two things are load-bearing:
   files in a Cache and 303s to `/?share-target=1`; `lib/pwa/shareTarget.ts` drains
   and empties that inbox on boot, then strips the flag so a reload can't re-import.
   A Cache is the only storage the worker and the page both reach without agreeing
-  on an IndexedDB schema. The constants are duplicated in `sw.js` and
-  `lib/pwa/constants.ts` — change one, change both.
+  on an IndexedDB schema.
+
+**The three-file contract is test-enforced, not comment-enforced.** The share
+path, cache name, inbox prefix and theme colour have to exist as literals in
+`constants.ts`, `public/sw.js` (plain JS, cannot import) and
+`site.webmanifest` (JSON, same problem). `lib/pwa/constants.test.ts` reads the
+latter two as TEXT and fails if any value drifts — otherwise this is the `19rem`
+failure mode again, invisible until a real share-to-app breaks on someone's
+phone. Everything that _can_ be imported, is: `lib/seo.ts` takes its SSR
+`theme-color` from `THEME_COLOR` in `lib/theme.ts` rather than repeating the hex.
 
 ### Install affordance, icons, colour
 
@@ -454,10 +462,10 @@ target use — via `useLaunchFiles`. Two things are load-bearing:
   `app-icon-maskable-*.png` is the same art at 66% on a full-bleed gradient whose
   ramp continues the artwork's own, so the inner square's edge is invisible and
   everything sits inside the 80% safe circle.
-- **Three colour values must agree** or the launch flashes: `theme_color` in the
-  manifest, `THEME_COLOR.dark` in `lib/theme.ts`, and the SSR `theme-color` default
-  in `lib/seo.ts`. They track `--surface`, NOT `--bg`, because the status bar sits
-  directly above the `bg-surface` TopBar. `apple-mobile-web-app-status-bar-style`
+- **The theme colour tracks `--surface`, NOT `--bg`**, because the status bar sits
+  directly above the `bg-surface` TopBar. `THEME_COLOR` in `lib/theme.ts` is the
+  source of truth; `lib/seo.ts` imports it and the manifest's copy is checked by
+  `constants.test.ts` (see above). `apple-mobile-web-app-status-bar-style`
   is `default` on purpose: it makes WebKit tint the status bar from `theme-color`
   (which `theme.ts` rewrites per theme), whereas `black-translucent` would force
   white status text over a white light-theme TopBar.
