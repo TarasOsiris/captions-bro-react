@@ -3,7 +3,7 @@
 // caller attaches the actual decoded source to each item (a <video>/<img> in the
 // preview, a mediabunny frame in export) before handing the list to the compositor.
 
-import { assetOf, clipIsLiveAt } from './selectors'
+import { assetOf, clipIsLiveAt, projectDuration } from './selectors'
 import type { Clip, MediaAsset, Project } from './types'
 
 export interface SceneItem {
@@ -14,15 +14,21 @@ export interface SceneItem {
 }
 
 /** Clips visible at project time `t`, in draw order. Audio tracks are excluded.
- *  The interval is inclusive of the end so a clip paused at its final frame stays
- *  on screen (rather than the canvas going black); at an exact clip boundary the
- *  later/topmost clip wins by draw order. */
+ *  Liveness is the half-open `clipIsLiveAt` window, so at a packed boundary only
+ *  the later clip is live — two clips sharing an edge never both draw. The one
+ *  exception is the exact timeline end (`t === projectDuration`): the clip ending
+ *  there is held on screen so the canvas doesn't flash to black on the final
+ *  frame. Nothing starts at that instant, so the hold can never overlap. */
 export function resolveScene(project: Project, t: number): SceneItem[] {
   const items: SceneItem[] = []
+  const end = projectDuration(project)
   for (const track of project.tracks) {
     if (track.type === 'audio') continue
     for (const clip of track.clips) {
-      if (clipIsLiveAt(clip, t)) {
+      const live =
+        clipIsLiveAt(clip, t) ||
+        (t === end && clip.start + clip.duration === end)
+      if (live) {
         items.push({
           clip,
           asset: assetOf(project, clip),

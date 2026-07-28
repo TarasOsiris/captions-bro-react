@@ -86,12 +86,14 @@ export function snapTime(
   return best
 }
 
-/** Whether `clip` is on screen at time `t`. Inclusive at both ends, matching
- *  `resolveScene` — the one definition of the live window, so the compositor,
- *  the playback element sync and the selection UI can't disagree about a
- *  boundary. */
+/** Whether `clip` is on screen at time `t`. Half-open `[start, end)` — start
+ *  inclusive, end exclusive — so at a gapless boundary the later clip wins
+ *  outright, with no reliance on draw order. The one per-clip definition of the
+ *  live window, shared by `resolveScene`, the playback element sync and the
+ *  selection UI so they can't disagree about a boundary. `resolveScene` layers
+ *  the final-frame hold (see there) on top for the exact timeline end. */
 export function clipIsLiveAt(clip: Clip, t: number): boolean {
-  return t >= clip.start && t <= clip.start + clip.duration
+  return t >= clip.start && t < clip.start + clip.duration
 }
 
 /** Where to move the playhead so `clip` is actually visible, or null if `t`

@@ -48,6 +48,18 @@ describe('resolveScene', () => {
     expect(resolveScene(p, 5.01)).toHaveLength(0)
   })
 
+  it('draws only the later clip at a packed boundary (no overlap)', () => {
+    // Selecting clip b parks the playhead at exactly its start (= a's end);
+    // only b is live there, never both — the reported overlap bug.
+    const p = projectWith([clip('a', 0, 5), clip('b', 5, 3)])
+    expect(resolveScene(p, 5).map((i) => i.clip.id)).toEqual(['b'])
+  })
+
+  it('holds only the last clip on the final frame', () => {
+    const p = projectWith([clip('a', 0, 5), clip('b', 5, 3)])
+    expect(resolveScene(p, 8).map((i) => i.clip.id)).toEqual(['b'])
+  })
+
   it('skips audio tracks in the drawn scene', () => {
     const p = createProject('test')
     p.tracks = [

@@ -163,10 +163,11 @@ describe('snapTargets / snapTime — the free-positioned overlay drag', () => {
 })
 
 describe('clipIsLiveAt — the live window the export fast path relies on', () => {
-  it('is inclusive at both ends', () => {
+  it('is half-open: start inclusive, end exclusive', () => {
     const c = createTextClip({ start: 2, duration: 3 })
     expect(clipIsLiveAt(c, 2)).toBe(true)
-    expect(clipIsLiveAt(c, 5)).toBe(true)
+    expect(clipIsLiveAt(c, 4.999)).toBe(true)
+    expect(clipIsLiveAt(c, 5)).toBe(false)
     expect(clipIsLiveAt(c, 1.99)).toBe(false)
     expect(clipIsLiveAt(c, 5.01)).toBe(false)
   })

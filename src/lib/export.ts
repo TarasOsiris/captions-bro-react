@@ -345,9 +345,11 @@ export function exportVideo(
                 },
               },
             ]
-            // Caption burn-in, on the fast path. `clipIsLiveAt` is the ONE
-            // definition of a clip's live window, shared with `resolveScene`,
-            // so a text clip appears on exactly the frames the preview showed it.
+            // Caption burn-in, on the fast path. `clipIsLiveAt` is the shared
+            // per-clip live window (half-open); `resolveScene` layers a
+            // final-frame hold on top, immaterial to a frame-sampled text
+            // overlay — so a text clip appears on exactly the frames the preview
+            // showed it.
             if (overlays.length > 0) {
               const t = sample.timestamp + timeOffset
               for (const clip of overlays) {

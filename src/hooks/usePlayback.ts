@@ -9,7 +9,8 @@
 import { useCallback, useEffect } from 'react'
 import { toast } from 'sonner'
 import { useEditorStore } from '@/store/editorStore'
-import { clipIsLiveAt, projectDuration } from '@/lib/model/selectors'
+import { projectDuration } from '@/lib/model/selectors'
+import { resolveScene } from '@/lib/model/scene'
 import { clamp } from '@/lib/utils'
 import type { Project } from '@/lib/model/types'
 import type { MediaPool } from '@/lib/render/mediaPool'
@@ -28,14 +29,22 @@ function syncVideos(
   pool: MediaPool,
   playing: boolean,
 ) {
+  // resolveScene is the single arbiter of what's on screen; slaving the <video>
+  // elements to the same list (its final-frame hold included) keeps decode and
+  // draw from disagreeing about a boundary.
+  const live = new Map(
+    resolveScene(project, t).map((item): [string, number] => [
+      item.clip.id,
+      item.localTime,
+    ]),
+  )
   for (const track of project.tracks) {
     for (const clip of track.clips) {
       if (clip.type !== 'video') continue
       const el = pool.videos.get(clip.id)
       if (!el) continue
-      const live = clipIsLiveAt(clip, t)
-      if (live) {
-        const local = clip.trimIn + (t - clip.start)
+      const local = live.get(clip.id)
+      if (local !== undefined) {
         if (
           Math.abs(el.currentTime - local) > DRIFT &&
           Number.isFinite(local)
@@ -87,13 +96,14 @@ function syncVideos(
  * not the audio one, so a later unmuted play() would still be blocked.
  */
 function primeAndPlay(project: Project, t: number, pool: MediaPool) {
+  const live = new Set(resolveScene(project, t).map((item) => item.clip.id))
   for (const track of project.tracks) {
     for (const clip of track.clips) {
       if (clip.type !== 'video') continue
       const el = pool.videos.get(clip.id)
       if (!el) continue
       const playing = el.play()
-      if (clipIsLiveAt(clip, t)) {
+      if (live.has(clip.id)) {
         playing.catch(() => {}) // syncVideos surfaces a real refusal
       } else {
         // Prime-only: stop it again as soon as it starts, so nothing is heard.
