@@ -106,6 +106,21 @@ function Editor() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-bg text-ink">
+      {/* Semantic markup for search crawlers & screen readers */}
+      <h1 className="sr-only">
+        Free Browser Video Editor — No Account, No Registration, No Watermark
+      </h1>
+      <section className="sr-only" aria-label="About Captions Bro">
+        <h2>Free Online Browser Video Editor</h2>
+        <p>
+          Captions Bro is a 100% free browser-based video editor requiring no
+          account, no registration, and no sign-up. Trim video clips, add custom
+          text overlay captions, and export clean H.264 MP4 videos with no
+          watermark. All video processing happens client-side inside your
+          browser for total privacy.
+        </p>
+      </section>
+
       <TopBar
         projectName={hasClips ? project.name : null}
         canExport={hasClips && !exporting}

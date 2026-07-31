@@ -13,11 +13,13 @@ export const siteName = 'Captions Bro'
 export const appIconImage = `${siteUrl}/app-icon-512.png`
 export const defaultSeoImage = `${siteUrl}/og-image.png`
 
-export const defaultTitle = 'Captions Bro — Video Captions in Your Browser'
+export const defaultTitle =
+  'Free Browser Video Editor (No Account, No Watermark) — Captions Bro'
 export const defaultDescription =
-  'Cut clips, generate accurate AI captions, animate subtitles, and export social videos right in your browser with Captions Bro — no upload, no install, and nothing leaves your device.'
+  '100% free browser video editor with no account, no registration, and no watermark. Trim video clips, add captions and text, and export clean MP4s directly in your web browser with zero uploads.'
 
-const defaultImageAlt = 'Captions Bro — browser video editor with auto captions'
+const defaultImageAlt =
+  'Free browser video editor — no watermark, no account, no registration — Captions Bro'
 
 // The host serves page URLs with a trailing slash (200) and 301-redirects the
 // slashless form, so canonical / og:url / JSON-LD URLs must carry the slash to
@@ -72,6 +74,11 @@ export function seo({
   const meta = [
     { title },
     { name: 'description', content: description },
+    {
+      name: 'keywords',
+      content:
+        'free browser video editor, video editor no account, video editor no registration, video editor no watermark, free online video editor, in-browser video editing, private video editor, client-side video editor, add captions to video',
+    },
     { name: 'application-name', content: siteName },
     { name: 'apple-mobile-web-app-title', content: siteName },
     { name: 'author', content: siteName },
@@ -106,8 +113,8 @@ export function seo({
 }
 
 // --- JSON-LD (schema.org) -------------------------------------------------
-// A single `@graph` of Organization + WebSite + WebApplication, mirroring the
-// marketing site's structured data but describing the *browser* product.
+// A single `@graph` of Organization + WebSite + WebApplication + FAQPage,
+// describing the browser product and key features.
 
 export function organizationJsonLd() {
   return {
@@ -121,12 +128,15 @@ export function organizationJsonLd() {
       url: appIconImage,
     },
     knowsAbout: [
-      'video captions',
-      'AI subtitles',
+      'free browser video editor',
       'in-browser video editing',
+      'video editor with no watermark',
+      'video editing without an account',
+      'video editor no registration',
+      'add captions and subtitles to video',
       'WebCodecs video export',
+      'client-side video editing',
       'short-form video',
-      'video captioning for creators',
     ],
     address: {
       '@type': 'PostalAddress',
@@ -167,7 +177,7 @@ export function webApplicationJsonLd() {
   return {
     '@type': 'WebApplication',
     '@id': `${siteUrl}/#webapp`,
-    name: siteName,
+    name: `${siteName} — Free Browser Video Editor`,
     url: absoluteUrl('/'),
     description: defaultDescription,
     applicationCategory: 'MultimediaApplication',
@@ -178,11 +188,17 @@ export function webApplicationJsonLd() {
     inLanguage: 'en-US',
     isPartOf: { '@id': `${siteUrl}/#website` },
     publisher: { '@id': `${siteUrl}/#organization` },
+    // Free-forever, no paywall, no login — an honest, machine-readable signal
+    // that reinforces the title/description differentiators.
+    isAccessibleForFree: true,
     featureList: [
-      'Import video and image clips',
-      'AI-generated captions and animated subtitles',
-      'WYSIWYG 16:9 preview',
-      'Client-side H.264 + AAC MP4 export (no upload)',
+      'Free browser video editor — 100% free to use',
+      'No account or sign-up / registration required',
+      'No watermark on exported MP4 videos',
+      'Runs entirely in your web browser',
+      'Trim, arrange, and combine video and image clips',
+      'Add styled captions, subtitles, and text overlays',
+      'Client-side H.264 + AAC MP4 export — no upload, nothing leaves your device',
     ],
     offers: {
       '@type': 'Offer',
@@ -196,14 +212,60 @@ export function webApplicationJsonLd() {
   }
 }
 
+export function faqJsonLd() {
+  return {
+    '@type': 'FAQPage',
+    '@id': `${siteUrl}/#faq`,
+    mainEntity: [
+      {
+        '@type': 'Question',
+        name: 'Is Captions Bro a free browser video editor?',
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: 'Yes! Captions Bro is a 100% free in-browser video editor. You can trim clips, format captions, and export HD videos with zero cost.',
+        },
+      },
+      {
+        '@type': 'Question',
+        name: 'Do I need an account or registration to use this video editor?',
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: 'No. Captions Bro requires no account, no login, and no registration. Simply open the app in your browser and start editing immediately.',
+        },
+      },
+      {
+        '@type': 'Question',
+        name: 'Does Captions Bro place a watermark on exported videos?',
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: 'No! Exported videos carry no watermarks. Your final exported MP4 video is completely clean.',
+        },
+      },
+      {
+        '@type': 'Question',
+        name: 'Are my videos uploaded to any server or cloud?',
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: 'No. Video rendering and encoding take place 100% client-side inside your web browser using WebCodecs technology. Your media files never leave your device.',
+        },
+      },
+    ],
+  }
+}
+
 /**
  * The `<script type="application/ld+json">` entry for `head().scripts` — the
- * combined Organization + WebSite + WebApplication graph.
+ * combined Organization + WebSite + WebApplication + FAQPage graph.
  */
 export function siteJsonLdScript() {
   const graph = {
     '@context': 'https://schema.org',
-    '@graph': [organizationJsonLd(), websiteJsonLd(), webApplicationJsonLd()],
+    '@graph': [
+      organizationJsonLd(),
+      websiteJsonLd(),
+      webApplicationJsonLd(),
+      faqJsonLd(),
+    ],
   }
   return {
     type: 'application/ld+json',
