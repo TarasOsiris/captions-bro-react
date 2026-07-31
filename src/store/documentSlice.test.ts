@@ -67,7 +67,7 @@ describe('addClipAtIndex', () => {
   })
 })
 
-describe('moveClipToIndex', () => {
+describe('moveClipToTrack within the magnetic track (reorder)', () => {
   beforeEach(() => {
     useEditorStore
       .getState()
@@ -75,7 +75,7 @@ describe('moveClipToIndex', () => {
   })
 
   it('moves a clip to the front and re-packs', () => {
-    useEditorStore.getState().moveClipToIndex('c', 0)
+    useEditorStore.getState().moveClipToTrack('c', trackId(), { index: 0 })
     const clips = trackClips()
     expect(clips.map((c) => c.id)).toEqual(['c', 'a', 'b'])
     expect(clips.map((c) => c.start)).toEqual([0, 4, 9])
@@ -83,20 +83,20 @@ describe('moveClipToIndex', () => {
   })
 
   it('moves a clip to the end and re-packs', () => {
-    useEditorStore.getState().moveClipToIndex('a', 2)
+    useEditorStore.getState().moveClipToTrack('a', trackId(), { index: 2 })
     const clips = trackClips()
     expect(clips.map((c) => c.id)).toEqual(['b', 'c', 'a'])
     expectPacked(clips)
   })
 
   it('leaves order unchanged when moved to its own slot', () => {
-    useEditorStore.getState().moveClipToIndex('b', 1)
+    useEditorStore.getState().moveClipToTrack('b', trackId(), { index: 1 })
     expect(trackClips().map((c) => c.id)).toEqual(['a', 'b', 'c'])
     expectPacked(trackClips())
   })
 })
 
-describe('trimClip', () => {
+describe('setClipTrimWindow on a magnetic track', () => {
   beforeEach(() => {
     useEditorStore
       .getState()
@@ -104,7 +104,10 @@ describe('trimClip', () => {
   })
 
   it('shortens a clip and ripples the clips after it', () => {
-    useEditorStore.getState().trimClip('b', 0, 2) // right-trim b: 3 → 2
+    // Right-trim b: 3 → 2. The proposal's start is ignored — re-pack owns it.
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('b', { start: 5, trimIn: 0, duration: 2 })
     const clips = trackClips()
     expect(clips.map((c) => c.duration)).toEqual([5, 2, 4])
     expect(clips.map((c) => c.start)).toEqual([0, 5, 7]) // c rippled left
@@ -112,7 +115,10 @@ describe('trimClip', () => {
   })
 
   it('applies a head trim (trimIn up, duration down) and re-packs', () => {
-    useEditorStore.getState().trimClip('a', 2, 3) // head-trim a by 2s
+    // Head-trim a by 2s; the free-lane start (2) must NOT move a packed clip.
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('a', { start: 2, trimIn: 2, duration: 3 })
     const clips = trackClips()
     expect(clips[0].trimIn).toBe(2)
     expect(clips.map((c) => c.duration)).toEqual([3, 3, 4])
@@ -136,26 +142,33 @@ function textClip(id: string, start: number, duration: number): Clip {
   }
 }
 
-describe('ensureOverlayTrack', () => {
+describe('addOverlayTrack', () => {
   beforeEach(() => {
     useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
   })
 
-  it('creates the track on first use and is idempotent after', () => {
-    const first = useEditorStore.getState().ensureOverlayTrack()
-    const second = useEditorStore.getState().ensureOverlayTrack()
-    expect(first).toBe(second)
+  it('appends LAST by default, so draw order puts the new lane on top', () => {
+    const id = useEditorStore.getState().addOverlayTrack()
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks[tracks.length - 1]).toMatchObject({ id, type: 'overlay' })
+  })
+
+  it('creates a NEW lane on every call — lanes are plural', () => {
+    const first = useEditorStore.getState().addOverlayTrack()
+    const second = useEditorStore.getState().addOverlayTrack()
+    expect(first).not.toBe(second)
     expect(
       useEditorStore
         .getState()
         .project.tracks.filter((t) => t.type === 'overlay'),
-    ).toHaveLength(1)
+    ).toHaveLength(2)
   })
 
-  it('appends LAST, so draw order puts text above the video', () => {
-    useEditorStore.getState().ensureOverlayTrack()
-    const tracks = useEditorStore.getState().project.tracks
-    expect(tracks[tracks.length - 1].type).toBe('overlay')
+  it('splices directly ABOVE `belowTrackId` in the stack', () => {
+    const top = useEditorStore.getState().addOverlayTrack()
+    const mid = useEditorStore.getState().addOverlayTrack(trackId())
+    const order = useEditorStore.getState().project.tracks.map((t) => t.id)
+    expect(order).toEqual([trackId(), mid, top])
   })
 })
 
@@ -163,10 +176,13 @@ describe('overlay clips are free-positioned', () => {
   let overlayId = ''
   beforeEach(() => {
     useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
-    overlayId = useEditorStore.getState().ensureOverlayTrack()
+    overlayId = useEditorStore.getState().addOverlayTrack()
   })
 
-  it('keeps out-of-order, overlapping starts instead of packing them', () => {
+  it('addClip stays a raw primitive: no packing, no lane clamping', () => {
+    // Policy callers (useClipInsert, moveClipToTrack) pre-pick a lane with
+    // room; the primitive itself must not second-guess them — hydration's
+    // normalizeLaneOverlaps is what handles legacy overlapping data.
     useEditorStore.getState().addClip(textClip('t1', 3, 4), overlayId)
     useEditorStore.getState().addClip(textClip('t2', 1, 4), overlayId)
     expect(overlay()!.clips.map((c) => c.start)).toEqual([3, 1]) // overlapping
@@ -181,7 +197,9 @@ describe('overlay clips are free-positioned', () => {
   it('trimming one overlay clip never ripples onto its siblings', () => {
     useEditorStore.getState().addClip(textClip('t1', 2, 4), overlayId)
     useEditorStore.getState().addClip(textClip('t2', 9, 3), overlayId)
-    useEditorStore.getState().trimClip('t1', 0, 1)
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('t1', { start: 2, trimIn: 0, duration: 1 })
     const clips = overlay()!.clips
     expect(clips.map((c) => c.start)).toEqual([2, 9]) // t2 did NOT move
     expect(clips[0].duration).toBe(1)
@@ -203,10 +221,33 @@ describe('overlay clips are free-positioned', () => {
     expect(overlay()!.clips[0].duration).toBeGreaterThan(0)
   })
 
-  it('setClipStart moves without touching the duration', () => {
+  it('a same-lane move sets the time without touching the duration', () => {
     useEditorStore.getState().addClip(textClip('t1', 2, 4), overlayId)
-    useEditorStore.getState().setClipStart('t1', 11.5)
+    useEditorStore.getState().moveClipToTrack('t1', overlayId, { start: 11.5 })
     expect(overlay()!.clips[0]).toMatchObject({ start: 11.5, duration: 4 })
+  })
+
+  it('a same-lane move clamps flush against a sibling instead of overlapping', () => {
+    useEditorStore.getState().addClip(textClip('t1', 0, 4), overlayId)
+    useEditorStore.getState().addClip(textClip('t2', 6, 2), overlayId)
+    useEditorStore.getState().moveClipToTrack('t2', overlayId, { start: 1 })
+    // Desired 1 sits over t1 [0,4) → flush at 4.
+    expect(overlay()!.clips.find((c) => c.id === 't2')!.start).toBe(4)
+  })
+
+  it('setClipWindow clamps the resized window into a free gap', () => {
+    useEditorStore.getState().addClip(textClip('t1', 0, 4), overlayId)
+    useEditorStore.getState().addClip(textClip('t2', 5, 1), overlayId)
+    useEditorStore.getState().setClipWindow('t2', 3, 2) // [3,5) over t1 → at 4
+    expect(overlay()!.clips[1]).toMatchObject({ start: 4, duration: 2 })
+  })
+
+  it('updateClip re-clamps a lane clip whose timing patch made it overlap', () => {
+    // A PiP video learning its real duration from metadata is the real case.
+    useEditorStore.getState().addClip(textClip('t1', 0, 4), overlayId)
+    useEditorStore.getState().addClip(textClip('t2', 4, 2), overlayId)
+    useEditorStore.getState().updateClip('t1', { duration: 6 }) // [0,6) over t2
+    expect(overlay()!.clips[0]).toMatchObject({ start: 6, duration: 6 })
   })
 })
 
@@ -214,7 +255,7 @@ describe('duplicate / split / remove on an overlay track', () => {
   let overlayId = ''
   beforeEach(() => {
     useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
-    overlayId = useEditorStore.getState().ensureOverlayTrack()
+    overlayId = useEditorStore.getState().addOverlayTrack()
     useEditorStore.getState().addClip(textClip('t1', 2, 4), overlayId)
   })
 
@@ -225,6 +266,17 @@ describe('duplicate / split / remove on an overlay track', () => {
     expect(clips[1].id).toBe(newId)
     expect(clips[1].start).toBeCloseTo(6) // 2 + 4
     expect(clips[0].start).toBeCloseTo(2) // original untouched
+  })
+
+  it('duplicate on a blocked lane lands on a fresh lane directly above', () => {
+    // A sibling occupies [6,10) — no room right after t1 [2,6) on this lane.
+    useEditorStore.getState().addClip(textClip('t2', 6, 4), overlayId)
+    const newId = useEditorStore.getState().duplicateClip('t1')
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks).toHaveLength(3)
+    expect(tracks[2].type).toBe('overlay')
+    expect(tracks[2].clips.map((c) => c.id)).toEqual([newId])
+    expect(tracks[2].clips[0].start).toBeCloseTo(2) // over its source
   })
 
   it('duplicate gives the copy its own textStyle (no aliasing)', () => {
@@ -258,5 +310,135 @@ describe('duplicate / split / remove on an overlay track', () => {
     useEditorStore.getState().addClip(textClip('t2', 9, 2), overlayId)
     useEditorStore.getState().removeClip('t1')
     expect(overlay()!.clips.map((c) => c.id)).toEqual(['t2'])
+  })
+})
+
+// ── Cross-track moves: the vertical drag's commit actions ────────────────────
+
+describe('moveClipToTrack', () => {
+  let laneId = ''
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3)]))
+    laneId = useEditorStore.getState().addOverlayTrack()
+  })
+
+  it('main → lane: frees the clip at the given start and re-packs the source', () => {
+    useEditorStore.getState().moveClipToTrack('b', laneId, { start: 7 })
+    expect(trackClips().map((c) => c.id)).toEqual(['a'])
+    expectPacked(trackClips())
+    expect(overlay()!.clips).toHaveLength(1)
+    expect(overlay()!.clips[0]).toMatchObject({ id: 'b', start: 7 })
+  })
+
+  it('lane → main: splices at the index, re-packs, prunes the emptied lane', () => {
+    useEditorStore.getState().moveClipToTrack('b', laneId, { start: 7 })
+    useEditorStore.getState().moveClipToTrack('b', trackId(), { index: 0 })
+    expect(trackClips().map((c) => c.id)).toEqual(['b', 'a'])
+    expectPacked(trackClips())
+    expect(overlay()).toBeUndefined()
+  })
+
+  it('lane → lane: lands in the nearest free gap of the target', () => {
+    const upperId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 3, 4), laneId)
+    useEditorStore.getState().addClip(textClip('t2', 0, 4), upperId)
+    useEditorStore.getState().moveClipToTrack('t1', upperId, { start: 1 })
+    const tracks = useEditorStore.getState().project.tracks
+    const upper = tracks.find((t) => t.id === upperId)!
+    expect(upper.clips.map((c) => c.id)).toEqual(['t2', 't1'])
+    expect(upper.clips[1].start).toBe(4) // flush after t2
+    expect(tracks.some((t) => t.id === laneId)).toBe(false) // source pruned
+  })
+
+  it('never lets text join the magnetic track', () => {
+    useEditorStore.getState().addClip(textClip('t1', 2, 4), laneId)
+    useEditorStore.getState().moveClipToTrack('t1', trackId(), { index: 0 })
+    expect(trackClips().map((c) => c.id)).toEqual(['a', 'b'])
+    expect(overlay()!.clips.map((c) => c.id)).toEqual(['t1'])
+  })
+})
+
+describe('moveClipToNewTrack', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3)]))
+  })
+
+  it('creates a lane directly above `belowTrackId` and moves the clip onto it', () => {
+    useEditorStore.getState().moveClipToNewTrack('b', trackId(), 2)
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks).toHaveLength(2)
+    expect(tracks[1].type).toBe('overlay')
+    expect(tracks[1].clips).toHaveLength(1)
+    expect(tracks[1].clips[0]).toMatchObject({ id: 'b', start: 2 })
+    expectPacked(trackClips())
+  })
+
+  it('prunes an overlay source that emptied into the move', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 0, 2), laneId)
+    useEditorStore.getState().addClip(textClip('t2', 5, 2), laneId)
+    useEditorStore.getState().moveClipToNewTrack('t1', laneId, 1)
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks).toHaveLength(3)
+    expect(tracks[1].clips.map((c) => c.id)).toEqual(['t2'])
+    expect(tracks[2].clips[0]).toMatchObject({ id: 't1', start: 1 })
+  })
+
+  it('sole occupant into the seam above its own lane just changes time', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 0, 2), laneId)
+    useEditorStore.getState().moveClipToNewTrack('t1', laneId, 4)
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks).toHaveLength(2)
+    expect(tracks[1].id).toBe(laneId) // no churn — same lane object
+    expect(tracks[1].clips[0].start).toBe(4)
+  })
+
+  it('sole occupant into the seam below its own lane is the same no-op', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 3, 2), laneId)
+    useEditorStore.getState().moveClipToNewTrack('t1', trackId(), 1)
+    const tracks = useEditorStore.getState().project.tracks
+    expect(tracks).toHaveLength(2)
+    expect(tracks[1].id).toBe(laneId)
+    expect(tracks[1].clips[0].start).toBe(1)
+  })
+})
+
+describe('setClipTrimWindow — the free-lane edge trim', () => {
+  let laneId = ''
+  beforeEach(() => {
+    useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
+    laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('l', 0, 2), laneId)
+    useEditorStore.getState().addClip(textClip('t1', 4, 3), laneId)
+    useEditorStore.getState().addClip(textClip('r', 9, 2), laneId)
+  })
+
+  const t1 = () => overlay()!.clips.find((c) => c.id === 't1')!
+
+  it('moves the left edge with start (head trim keeps the end fixed)', () => {
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('t1', { start: 5, trimIn: 1, duration: 2 })
+    expect(t1()).toMatchObject({ start: 5, trimIn: 1, duration: 2 })
+  })
+
+  it('clamps an outward head drag flush at the left neighbour', () => {
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('t1', { start: 1, trimIn: 0, duration: 6 })
+    expect(t1()).toMatchObject({ start: 2, trimIn: 1, duration: 5 })
+  })
+
+  it('clamps an outward tail drag flush at the right neighbour', () => {
+    useEditorStore
+      .getState()
+      .setClipTrimWindow('t1', { start: 4, trimIn: 0, duration: 8 })
+    expect(t1()).toMatchObject({ start: 4, duration: 5 })
   })
 })

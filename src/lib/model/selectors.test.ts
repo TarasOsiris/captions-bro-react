@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   clipIsLiveAt,
+  freeTrimWindow,
   insertionIndex,
   mediaClips,
-  overlayTrack,
+  overlayTracks,
   resolveTrim,
   snapTargets,
   snapTime,
@@ -107,16 +108,40 @@ describe('resolveTrim', () => {
   })
 })
 
-describe('overlayTrack', () => {
-  it('is null on a fresh project (created lazily on first text insert)', () => {
-    expect(overlayTrack(createProject('t'))).toBeNull()
+describe('freeTrimWindow — the free-lane edge-trim window', () => {
+  it('moves start with a left trim, keeping the end pinned', () => {
+    // [4, 9) trimmed to 3s from the left → [6, 9).
+    expect(
+      freeTrimWindow(
+        'left',
+        { start: 4, duration: 5 },
+        { trimIn: 2, duration: 3 },
+      ),
+    ).toEqual({ start: 6, trimIn: 2, duration: 3 })
   })
 
-  it('finds the overlay track once one exists', () => {
+  it('leaves start alone on a right trim', () => {
+    expect(
+      freeTrimWindow(
+        'right',
+        { start: 4, duration: 5 },
+        { trimIn: 0, duration: 7 },
+      ),
+    ).toEqual({ start: 4, trimIn: 0, duration: 7 })
+  })
+})
+
+describe('overlayTracks', () => {
+  it('is empty on a fresh project (lanes are created lazily on insert)', () => {
+    expect(overlayTracks(createProject('t'))).toEqual([])
+  })
+
+  it('lists overlay lanes in array order — the z-order, bottom first', () => {
     const p = createProject('t')
-    const overlay = createTrack('overlay')
-    p.tracks.push(overlay)
-    expect(overlayTrack(p)?.id).toBe(overlay.id)
+    const low = createTrack('overlay')
+    const high = createTrack('overlay')
+    p.tracks.push(low, high)
+    expect(overlayTracks(p).map((t) => t.id)).toEqual([low.id, high.id])
   })
 })
 

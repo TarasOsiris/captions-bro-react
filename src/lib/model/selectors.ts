@@ -45,11 +45,12 @@ export function videoTrack(project: Project): Track {
   return project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
 }
 
-/** The overlay (text) track, or null until one exists — it is created lazily on
- *  the first text insert and pruned when its last clip goes. Sibling of
- *  `videoTrack`: track routing lives here and nowhere else. */
-export function overlayTrack(project: Project): Track | null {
-  return project.tracks.find((t) => t.type === 'overlay') ?? null
+/** Every overlay lane, in array order (bottom of the stack first — z-order).
+ *  Lanes are created lazily on insert and pruned when their last clip goes, so
+ *  a text-free project has none. Sibling of `videoTrack`: track routing lives
+ *  here and nowhere else. */
+export function overlayTracks(project: Project): Track[] {
+  return project.tracks.filter((t) => t.type === 'overlay')
 }
 
 /** Every edge a free-positioned clip can snap to: 0, the playhead, and both ends
@@ -158,6 +159,25 @@ export function resolveTrim(
   // Head trim: h>0 removes from the start (trimIn↑, duration↓); h<0 restores it.
   const h = clamp(deltaSec, -clip.trimIn, clip.duration - minDuration)
   return { trimIn: clip.trimIn + h, duration: clip.duration - h }
+}
+
+/** The timeline window an edge trim proposes for a FREE-POSITIONED clip: the
+ *  left edge moves `start` with the trim (end pinned — nothing re-packs a free
+ *  lane), the right edge leaves `start` alone. A magnetic track ignores the
+ *  start (its re-pack owns it), so the caller needs no track-type branch. */
+export function freeTrimWindow(
+  edge: 'left' | 'right',
+  orig: { start: number; duration: number },
+  next: { trimIn: number; duration: number },
+): { start: number; trimIn: number; duration: number } {
+  return {
+    start:
+      edge === 'left'
+        ? orig.start + (orig.duration - next.duration)
+        : orig.start,
+    trimIn: next.trimIn,
+    duration: next.duration,
+  }
 }
 
 /** Total timeline duration = the furthest clip end across all tracks. */

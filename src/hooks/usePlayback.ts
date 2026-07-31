@@ -56,6 +56,9 @@ function syncVideos(
           }
         }
         el.muted = clip.muted ?? false
+        // Same gain the export mixer applies (mixTimelineAudio), so overlapping
+        // picture-in-picture audio previews exactly as it will export.
+        el.volume = clamp(clip.volume ?? 1, 0, 1)
         if (playing && el.paused) {
           el.play().catch((err: unknown) => {
             // Autoplay was refused (iOS: play() must originate in the task that

@@ -9,6 +9,7 @@ import { getAssetBlob } from '@/lib/persistence/assetStore'
 import { loadStoredProject, saveProject } from '@/lib/persistence/projectStore'
 import { generateFilmstrip } from '@/lib/thumbs'
 import { withTextDefaults } from '@/lib/model/text'
+import { normalizeLaneOverlaps } from '@/lib/model/lanes'
 import type { MediaAsset, Project } from '@/lib/model/types'
 import type { StoredProject } from '@/lib/persistence/projectStore'
 
@@ -55,13 +56,15 @@ async function hydrate(stored: StoredProject): Promise<Project | null> {
       ),
   }))
   if (stored.assets.length > 0 && Object.keys(assets).length === 0) return null
-  return {
+  // Documents written before lanes stopped overlapping may stack clips on one
+  // overlay track; spread those across lanes once, on the way in.
+  return normalizeLaneOverlaps({
     id: stored.id,
     name: stored.name,
     canvas: stored.canvas,
     tracks,
     assets,
-  }
+  })
 }
 
 /**

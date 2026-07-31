@@ -21,6 +21,12 @@ export interface UiSlice {
   setPanel: (panel: Panel | null) => void
   /** Open `panel`, or close it if it is already the active one. */
   togglePanel: (panel: Panel) => void
+  /** The asset id of an in-flight bin→timeline HTML5 drag, or null. Mirrored
+   *  here by the bin tile's dragstart because `dragover` cannot read
+   *  `dataTransfer` data (the browser withholds it until drop) — and the
+   *  Timeline's drop preview needs the asset's duration to pick a lane. */
+  draggingAssetId: string | null
+  setDraggingAssetId: (id: string | null) => void
 }
 
 export const createUiSlice: ImmerSlice<UiSlice> = (set) => ({
@@ -34,5 +40,12 @@ export const createUiSlice: ImmerSlice<UiSlice> = (set) => ({
   togglePanel: (panel) =>
     set((s) => {
       s.panel = s.panel === panel ? null : panel
+    }),
+
+  draggingAssetId: null,
+
+  setDraggingAssetId: (id) =>
+    set((s) => {
+      s.draggingAssetId = id
     }),
 })

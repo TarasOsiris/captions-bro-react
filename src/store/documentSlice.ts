@@ -2,6 +2,12 @@
 // mutation actions over it. immer drafts make nested updates clean.
 
 import { cloneClip, createProject, createTrack } from '@/lib/model/factories'
+import {
+  clampTrimToLane,
+  laneHasRoom,
+  resolveLaneStart,
+} from '@/lib/model/lanes'
+import { trackOfClip } from '@/lib/model/selectors'
 import { clamp } from '@/lib/utils'
 import type {
   Clip,
@@ -19,10 +25,12 @@ const MIN_CLIP_DURATION = 0.1
  * Lay a track's clips end-to-end from t=0 — the magnetic model: no gaps, no
  * overlap.
  *
- * OVERLAY tracks are exempt: text sits wherever it was put, may overlap itself,
- * and must not be dragged to t=0 by a neighbour's trim. This guard is the ONE
- * place that distinction lives — it covers addClipAtIndex, moveClipToIndex,
- * trimClip and duplicateClip at once.
+ * OVERLAY tracks are exempt: their clips are free-positioned — they sit where
+ * they were put (never overlapping a lane sibling; the lane geometry in
+ * lib/model/lanes.ts clamps that) and must not be dragged to t=0 by a
+ * neighbour's trim. This guard is the ONE place that distinction lives — it
+ * covers addClipAtIndex, moveClipToTrack, setClipTrimWindow and duplicateClip
+ * at once.
  */
 function repackTrack(track: Track): void {
   if (track.type === 'overlay') return
@@ -30,6 +38,40 @@ function repackTrack(track: Track): void {
   for (const clip of track.clips) {
     clip.start = t
     t += clip.duration
+  }
+}
+
+/** Take `clip` off `track` (re-packing a magnetic one behind it). */
+function detachClip(track: Track, clip: Clip): void {
+  track.clips.splice(track.clips.indexOf(clip), 1)
+  repackTrack(track)
+}
+
+/** Position `clip` at `start` on `track` — clamped into a free gap on a lane,
+ *  floored at 0 on a magnetic track. The ONE encoding of the lane-placement
+ *  clamp shared by every action that sets a start. */
+function placeClipStart(track: Track, clip: Clip, start: number): void {
+  clip.start =
+    track.type === 'overlay'
+      ? resolveLaneStart(track.clips, start, clip.duration, clip.id)
+      : Math.max(0, start)
+}
+
+/** A fresh overlay lane spliced directly ABOVE array position `index`
+ *  (array order is z-order, bottom first). */
+function spliceLaneAbove(project: Project, index: number): Track {
+  const lane = createTrack('overlay')
+  project.tracks.splice(index + 1, 0, lane)
+  return lane
+}
+
+/** Drop `track` if it is an overlay lane that just emptied, so the Timeline
+ *  doesn't carry a permanently blank lane and a text-free project looks
+ *  exactly as it did before any text existed. Undo restores the whole
+ *  project, so nothing is lost by pruning. */
+function pruneEmptyOverlayTrack(project: Project, track: Track): void {
+  if (track.type === 'overlay' && track.clips.length === 0) {
+    project.tracks = project.tracks.filter((t) => t.id !== track.id)
   }
 }
 
@@ -43,19 +85,36 @@ export interface DocumentSlice {
   addClip: (clip: Clip, trackId?: string) => void
   /** Insert a clip into a track at `index`, then re-pack the track (no gaps/overlap). */
   addClipAtIndex: (clip: Clip, trackId: string, index: number) => void
-  /** The overlay (text) track's id, creating it on first use. Appended LAST, so
-   *  draw order — which is tracks order — puts text above the video. */
-  ensureOverlayTrack: () => string
-  /** Set a free-positioned clip's timeline window outright: no re-pack, no
-   *  ripple onto neighbours. The overlay counterpart of `trimClip`. */
+  /** Create a new overlay lane and return its id. With `belowTrackId` it lands
+   *  directly ABOVE that track in the stack (array order is z-order, bottom
+   *  first); without, on top of everything. */
+  addOverlayTrack: (belowTrackId?: string) => string
+  /** Set a clip's timeline window outright: no ripple onto neighbours (on an
+   *  overlay lane the window is clamped into a free gap). The Inspector's
+   *  timing fields. */
   setClipWindow: (id: string, start: number, duration: number) => void
-  /** Time-based move for a free-positioned clip (the overlay lane's drag). */
-  setClipStart: (id: string, start: number) => void
-  /** Move a clip to `index` within its own track (index is against the array
-   *  excluding the clip), then re-pack the track. */
-  moveClipToIndex: (id: string, index: number) => void
-  /** Set a clip's source in-point + on-timeline length (edge trim), then re-pack. */
-  trimClip: (id: string, trimIn: number, duration: number) => void
+  /** Move a clip to a track — its own included (a plain reorder/re-time).
+   *  `{ index }` splices into a magnetic track and re-packs, `{ start }`
+   *  free-positions on an overlay lane (clamped into a gap). An overlay
+   *  source that empties is pruned. Text never joins a magnetic track — such
+   *  a call is a no-op. */
+  moveClipToTrack: (
+    id: string,
+    trackId: string,
+    at: { index: number } | { start: number },
+  ) => void
+  /** Move a clip onto a brand-new overlay lane directly above `belowTrackId`
+   *  (the seam drop). Prunes the emptied overlay source. */
+  moveClipToNewTrack: (id: string, belowTrackId: string, start: number) => void
+  /** Commit an edge trim as a whole window. The magnetic-vs-free routing
+   *  lives HERE, not in the caller: on a free lane the window (whose start
+   *  follows the left edge — see `freeTrimWindow`) clamps flush against lane
+   *  neighbours; on a magnetic track the re-pack owns `start` (the proposal's
+   *  is ignored) and neighbours ripple. */
+  setClipTrimWindow: (
+    id: string,
+    next: { start: number; trimIn: number; duration: number },
+  ) => void
   updateClip: (id: string, patch: Partial<Clip>) => void
   setClipTransform: (id: string, transform: Transform) => void
   removeClip: (id: string) => void
@@ -102,18 +161,17 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
       repackTrack(track)
     }),
 
-  ensureOverlayTrack: () => {
+  addOverlayTrack: (belowTrackId) => {
     // Captured through a closed-over `let` rather than returned from `set`,
     // matching `duplicateClip` below.
     let trackId = ''
     set((s) => {
-      const existing = s.project.tracks.find((t) => t.type === 'overlay')
-      if (existing) {
-        trackId = existing.id
-        return
-      }
       const track = createTrack('overlay')
-      s.project.tracks.push(track)
+      const below = belowTrackId
+        ? s.project.tracks.findIndex((t) => t.id === belowTrackId)
+        : -1
+      if (below >= 0) s.project.tracks.splice(below + 1, 0, track)
+      else s.project.tracks.push(track)
       trackId = track.id
     })
     return trackId
@@ -124,46 +182,73 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
       for (const track of s.project.tracks) {
         const clip = track.clips.find((c) => c.id === id)
         if (clip) {
-          clip.start = Math.max(0, start)
           clip.duration = Math.max(MIN_CLIP_DURATION, duration)
+          placeClipStart(track, clip, start)
           return
         }
       }
     }),
 
-  setClipStart: (id, start) =>
+  moveClipToTrack: (id, trackId, at) =>
     set((s) => {
-      for (const track of s.project.tracks) {
-        const clip = track.clips.find((c) => c.id === id)
-        if (clip) {
-          clip.start = Math.max(0, start)
-          return
-        }
+      const source = trackOfClip(s.project, id)
+      const target = s.project.tracks.find((t) => t.id === trackId)
+      if (!source || !target) return
+      const clip = source.clips.find((c) => c.id === id)!
+      // Text is generated content — it never joins the magnetic media track.
+      if (clip.type === 'text' && target.type !== 'overlay') return
+      detachClip(source, clip)
+      if ('index' in at) {
+        target.clips.splice(clamp(at.index, 0, target.clips.length), 0, clip)
+        repackTrack(target)
+      } else {
+        placeClipStart(target, clip, at.start)
+        target.clips.push(clip)
       }
+      if (source.id !== target.id) pruneEmptyOverlayTrack(s.project, source)
     }),
 
-  moveClipToIndex: (id, index) =>
+  moveClipToNewTrack: (id, belowTrackId, start) =>
     set((s) => {
-      for (const track of s.project.tracks) {
-        const from = track.clips.findIndex((c) => c.id === id)
-        if (from < 0) continue
-        const [clip] = track.clips.splice(from, 1)
-        track.clips.splice(clamp(index, 0, track.clips.length), 0, clip)
-        repackTrack(track)
+      const source = trackOfClip(s.project, id)
+      const below = s.project.tracks.findIndex((t) => t.id === belowTrackId)
+      if (!source || below < 0) return
+      const clip = source.clips.find((c) => c.id === id)!
+      // A sole occupant dropped into the seam beside its own lane: the fresh
+      // lane would sit exactly where the pruned one was — a structural no-op,
+      // so just set the time (and don't churn track ids under the UI).
+      if (
+        source.type === 'overlay' &&
+        source.clips.length === 1 &&
+        (source.id === belowTrackId ||
+          s.project.tracks[below + 1]?.id === source.id)
+      ) {
+        clip.start = Math.max(0, start)
         return
       }
+      detachClip(source, clip)
+      clip.start = Math.max(0, start)
+      spliceLaneAbove(s.project, below).clips.push(clip)
+      pruneEmptyOverlayTrack(s.project, source)
     }),
 
-  trimClip: (id, trimIn, duration) =>
+  setClipTrimWindow: (id, next) =>
     set((s) => {
       for (const track of s.project.tracks) {
         const clip = track.clips.find((c) => c.id === id)
-        if (clip) {
-          clip.trimIn = trimIn
-          clip.duration = duration
+        if (!clip) continue
+        if (track.type === 'overlay') {
+          const w = clampTrimToLane(track.clips, id, next)
+          clip.start = Math.max(0, w.start)
+          clip.trimIn = Math.max(0, w.trimIn)
+          clip.duration = Math.max(MIN_CLIP_DURATION, w.duration)
+        } else {
+          // Magnetic: the re-pack owns `start`; only the trim fields apply.
+          clip.trimIn = Math.max(0, next.trimIn)
+          clip.duration = Math.max(MIN_CLIP_DURATION, next.duration)
           repackTrack(track)
-          return
         }
+        return
       }
     }),
 
@@ -173,6 +258,16 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
         const clip = track.clips.find((c) => c.id === id)
         if (clip) {
           Object.assign(clip, patch)
+          // Keep the lane no-overlap invariant un-bypassable: a timing patch
+          // on a lane clip (e.g. a video learning its real duration from
+          // metadata) re-clamps it into a free gap, the same way repackTrack
+          // makes the magnetic invariant survive any mutation.
+          if (
+            track.type === 'overlay' &&
+            (patch.start !== undefined || patch.duration !== undefined)
+          ) {
+            placeClipStart(track, clip, clip.start)
+          }
           return
         }
       }
@@ -195,13 +290,7 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
         const i = track.clips.findIndex((c) => c.id === id)
         if (i >= 0) {
           track.clips.splice(i, 1)
-          // Drop an overlay track that just emptied, so the Timeline doesn't
-          // carry a permanently blank lane and a text-free project looks exactly
-          // as it did before any text existed. Undo restores the whole project,
-          // so nothing is lost by pruning.
-          if (track.type === 'overlay' && track.clips.length === 0) {
-            s.project.tracks = s.project.tracks.filter((t) => t.id !== track.id)
-          }
+          pruneEmptyOverlayTrack(s.project, track)
           return
         }
       }
@@ -237,17 +326,24 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set) => ({
   duplicateClip: (id) => {
     let newId: string | null = null
     set((s) => {
-      for (const track of s.project.tracks) {
+      for (const [trackIndex, track] of s.project.tracks.entries()) {
         const i = track.clips.findIndex((c) => c.id === id)
         if (i < 0) continue
         const original = track.clips[i]
         // On a packed track the re-pack below places the copy. On a FREE track
-        // nothing moves it, so without an explicit offset it would land exactly
-        // on the original and be invisible.
-        const copy =
-          track.type === 'overlay'
-            ? cloneClip(original, { start: original.start + original.duration })
-            : cloneClip(original)
+        // nothing moves it, so it goes right after the original — unless a lane
+        // sibling already sits there, in which case the copy lands on a fresh
+        // lane directly above, at the original's own time.
+        if (track.type === 'overlay') {
+          const after = original.start + original.duration
+          const fits = laneHasRoom(track.clips, after, original.duration)
+          const copy = cloneClip(original, fits ? { start: after } : undefined)
+          newId = copy.id
+          if (fits) track.clips.splice(i + 1, 0, copy)
+          else spliceLaneAbove(s.project, trackIndex).clips.push(copy)
+          return
+        }
+        const copy = cloneClip(original)
         newId = copy.id
         track.clips.splice(i + 1, 0, copy)
         repackTrack(track)

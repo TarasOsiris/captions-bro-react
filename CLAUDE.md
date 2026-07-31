@@ -170,18 +170,29 @@ store a px value in a `TextStyle`. Two further traps, both encoded in `layout.ts
   a caption is a text clip with a start and a duration. Transcription only has to
   _generate_ those clips; rendering, styling, preview and export already work.
 
-### Text overlays
+### Text overlays & stacked lanes
 
 The Text rail tab inserts a styled text clip at the playhead; the Inspector edits
-every property. Three structural rules:
+every property. Clips stack into as many tracks as needed (the CapCut model).
+Three structural rules:
 
-- **Overlay tracks are FREE-POSITIONED.** `repackTrack` (`documentSlice.ts`) lays
-  a track gapless from t=0 — the magnetic model, right for video and wrong for
-  captions, which sit at an arbitrary time and MAY overlap each other. The
-  `if (track.type === 'overlay') return` guard at the top of `repackTrack` is the
-  ONE place that distinction lives; it covers add/move/trim/duplicate at once.
-  The overlay track is created lazily on the first insert, appended LAST (draw
-  order is tracks order, so text lands on top) and pruned when its last clip goes.
+- **Overlay tracks are FREE-POSITIONED, plural, and never self-overlap.**
+  `repackTrack` (`documentSlice.ts`) lays a track gapless from t=0 — the magnetic
+  model, right for the ONE main video track (`tracks[0]`, always) and wrong for
+  overlays, which sit at arbitrary times. The `if (track.type === 'overlay')
+return` guard at the top of `repackTrack` is the ONE place that distinction
+  lives; it covers add/move/trim/duplicate/cross-track moves at once. Overlay
+  lanes at `tracks[1..n]` hold text AND media (picture-in-picture); array order
+  is z-order bottom-up, and the Timeline renders lanes REVERSED so the top lane
+  draws on top with the main track at the bottom. Within one lane clips never
+  overlap in time — the pure geometry in `lib/model/lanes.ts` clamps every
+  free-lane commit (`resolveLaneStart`/`clampTrimToLane`), the timeline's drop
+  resolver uses the same helpers so preview and commit can't disagree, and a
+  drop onto occupied time stacks onto a new lane instead (the seam gesture;
+  `moveClipToTrack`/`moveClipToNewTrack`). Text never joins the magnetic track.
+  Lanes are created lazily on insert (`pickOverlayLane` bottom-up, else
+  `addOverlayTrack`) and pruned when their last clip goes;
+  `normalizeLaneOverlaps` migrates pre-lane saved documents at hydration.
 - **`fontSize` is the single authority for size; `transform.scale` stays 1 for
   text.** The preview's corner handles write `fontSize`, not `scale`, so the
   Inspector's Size field and the canvas can never disagree. Because every metric
@@ -323,7 +334,7 @@ scroller panning.
 | canvas text editor       | `touch-auto`                            | a tap must place the caret inside the otherwise `touch-none` frame                     |
 | popover content          | `overscroll-contain`                    | the font list's scroll must not chain out to the mobile sheet                          |
 
-Both timeline axes pan because a second lane (the text overlay) can exist: rather
+Both timeline axes pan because extra lanes (text and PiP overlays) can exist: rather
 than growing `--timeline-h`, extra lanes **scroll vertically inside the fixed
 height**, with the ruler `sticky top-0` and the playhead knob riding it so it
 stays grabbable at any scroll offset. Raising the height floor instead would
@@ -332,9 +343,13 @@ leave a landscape phone ~90px of preview, which is what `styles.css` guards.
 **The interaction model** (CapCut/iMovie, and the only resolution that doesn't
 sacrifice one of the two gestures): _tap the ruler to seek, drag the playhead
 knob to scrub precisely, tap a clip to select then drag it to reorder._ Desktop
-drag-scrub is unchanged — the scrub handler branches on `pointerType`. On the
+drag-scrub is unchanged — the scrub handler branches on `pointerType`. On an
 overlay lane a drag sets an absolute time (snapped to nearby clip edges and the
-playhead) rather than an index — there are no slots to reorder into.
+playhead) rather than an index — there are no slots to reorder into. The drag is
+two-axis: `resolveClipDrop` classifies the pointer against the live lane rects
+into main / lane / seam (between lanes, above the stack — a NEW lane), the ONE
+resolver both the indicator and the commit use. Same-lane drags clamp flush
+against siblings; cross-lane drops onto occupied time stack a new lane instead.
 
 ### Pointer gestures are exclusive and cancel-safe
 

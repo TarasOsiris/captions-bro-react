@@ -236,9 +236,13 @@ export function MediaBin({
                       e.dataTransfer.setData('text/plain', asset?.name ?? '')
                       e.dataTransfer.effectAllowed = 'copy'
                       setDraggingId(clip.id)
+                      // Mirror into the store: dragover can't read dataTransfer,
+                      // and the Timeline's lane preview needs the duration.
+                      useEditorStore.getState().setDraggingAssetId(assetId)
                     }}
                     onDragEnd={() => {
                       setDraggingId(null)
+                      useEditorStore.getState().setDraggingAssetId(null)
                     }}
                     onClick={() => {
                       pick(clip)

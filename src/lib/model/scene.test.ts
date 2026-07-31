@@ -68,6 +68,23 @@ describe('resolveScene', () => {
     ]
     expect(resolveScene(p, 2).map((i) => i.clip.id)).toEqual(['v'])
   })
+
+  it('layers stacked lanes in array order — main first, top lane last', () => {
+    // Two overlay lanes live at once over the main track: draw order must be
+    // the tracks array order, so the LAST lane paints on top (the compositor
+    // draws in list order and the last item wins).
+    const p = createProject('test')
+    p.tracks = [
+      { id: 't-main', type: 'video', clips: [clip('v', 0, 5)] },
+      { id: 't-low', type: 'overlay', clips: [clip('pip', 1, 3)] },
+      { id: 't-high', type: 'overlay', clips: [clip('txt', 0, 5)] },
+    ]
+    expect(resolveScene(p, 2).map((i) => i.clip.id)).toEqual([
+      'v',
+      'pip',
+      'txt',
+    ])
+  })
 })
 
 describe('projectDuration', () => {

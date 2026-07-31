@@ -114,6 +114,34 @@ describe('planExport — the fast path survives text overlays', () => {
     expect(planExport(p).path).toBe('timeline')
   })
 
+  it('STAYS on the video fast path with text stacked across several lanes', () => {
+    // Lanes are plural now; text spread over N overlay tracks is still just
+    // burn-in for the single-source encoder, in draw order (lane order).
+    const low = createTextClip({ start: 0, duration: 2 })
+    const high = createTextClip({ start: 1, duration: 2 })
+    const p = withText(
+      withText(
+        projectWith([mediaClip('v', 'video', 'a1', 10)], [asset('a1', 10)]),
+        low,
+      ),
+      high,
+    )
+    const plan = planExport(p)
+    if (plan.path !== 'video') throw new Error('expected the video fast path')
+    expect(plan.overlays.map((c) => c.id)).toEqual([low.id, high.id])
+  })
+
+  it('routes a media clip on an overlay lane (PiP) to the compositor', () => {
+    const p = projectWith(
+      [mediaClip('v', 'video', 'a1', 10)],
+      [asset('a1', 10), asset('a2', 5)],
+    )
+    const lane = createTrack('overlay')
+    lane.clips = [{ ...mediaClip('pip', 'video', 'a2', 5), start: 2 }]
+    p.tracks.push(lane)
+    expect(planExport(p).path).toBe('timeline')
+  })
+
   it('still falls back for genuinely multi-clip or trimmed projects', () => {
     const two = projectWith(
       [mediaClip('v1', 'video', 'a1', 5), mediaClip('v2', 'video', 'a2', 5)],

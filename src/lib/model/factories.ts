@@ -57,6 +57,13 @@ export function assetFromFile(
   }
 }
 
+/** On-timeline duration a fresh clip of `asset` gets (stills use the image
+ *  default). The ONE encoding of that rule — the timeline's drop preview sizes
+ *  its landing window with this, so preview and committed clip agree. */
+export function assetClipDuration(asset: MediaAsset): number {
+  return asset.durationSec ?? DEFAULT_IMAGE_DURATION_SEC
+}
+
 /** A timeline clip placing `asset` at `start` seconds, at its natural length. */
 export function clipFromAsset(asset: MediaAsset, start = 0): Clip {
   return {
@@ -64,7 +71,7 @@ export function clipFromAsset(asset: MediaAsset, start = 0): Clip {
     type: asset.kind,
     assetId: asset.id,
     start,
-    duration: asset.durationSec ?? DEFAULT_IMAGE_DURATION_SEC,
+    duration: assetClipDuration(asset),
     trimIn: 0,
     transform: { ...IDENTITY },
   }
