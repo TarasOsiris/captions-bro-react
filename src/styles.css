@@ -21,9 +21,11 @@
   --accent-deep: #6d28d9;
   --destructive: #dc2626;
 
+  /* Selection affordances track the app accent, inheriting its per-theme value. */
+  --select: var(--accent);
+
   /* Fixed in both themes (intentionally absent from .dark). */
   --stage: #060709; /* media/preview viewport stays dark, always */
-  --select: #ffd203; /* iOS timeline selection amber, lives on dark chrome */
   --primary-fg: #ffffff; /* white on --accent */
 }
 
