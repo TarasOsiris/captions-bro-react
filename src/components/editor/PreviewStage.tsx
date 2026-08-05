@@ -285,6 +285,23 @@ export function PreviewStage({
     let raf = 0
     const render = () => {
       const { project: proj, currentTime } = useEditorStore.getState()
+      const scene = resolveScene(proj, currentTime)
+      // A live video mid-seek has no decodable frame (readyState drops below
+      // HAVE_CURRENT_DATA until the seek lands), so drawing the scene now would
+      // paint background where the clip is — a black flash on every scrub step.
+      // Hold the previous composite instead and try again next frame. Seeking
+      // alone isn't enough to skip: with a frame still available the element
+      // paints its old frame, which is exactly the hold we want. `error` guards
+      // a seek that can never land from freezing the preview forever.
+      const midSeek = scene.some(({ clip }) => {
+        if (clip.type !== 'video') return false
+        const v = poolRef.current.videos.get(clip.id)
+        return v != null && v.seeking && v.readyState < 2 && v.error == null
+      })
+      if (midSeek) {
+        raf = requestAnimationFrame(render)
+        return
+      }
       // Size the backing store to the DISPLAYED pixels (× DPR), not the export
       // resolution — so the preview is crisp at native density on any screen
       // instead of being up/down-scaled from a fixed 1920×1080. Geometry is
@@ -300,7 +317,7 @@ export function PreviewStage({
         height: ch,
         background: proj.canvas.background,
       }
-      const items: DrawItem[] = resolveScene(proj, currentTime).map((item) => ({
+      const items: DrawItem[] = scene.map((item) => ({
         transform: item.clip.transform,
         source: sourceFor(item.clip, cw, ch),
       }))
