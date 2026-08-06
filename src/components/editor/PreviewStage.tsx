@@ -22,6 +22,7 @@ import {
   hitTestRect,
   placeRect,
   rectPoint,
+  snapMove,
   visibleRect,
   wrapWidthForDrag,
 } from '@/lib/transform'
@@ -36,6 +37,18 @@ const MAX_FONT_SIZE = 0.4
 /** Wrap-width bounds as a fraction of canvas width. */
 const MIN_BOX_WIDTH = 0.05
 const MAX_BOX_WIDTH = 1
+/** How close (px) a dragged clip must get to a canvas edge or center line
+ *  before it snaps — the Timeline's drag threshold, so both feel the same. */
+const SNAP_PX = 8
+
+/** The canvas alignment guides a move gesture currently has engaged, as
+ *  fractions of the frame. Chrome, and React-local: routing them through the
+ *  store would bump the document revision and pollute undo on every move. */
+interface SnapGuides {
+  x: number | null
+  y: number | null
+}
+const NO_GUIDES: SnapGuides = { x: null, y: null }
 
 interface PreviewStageProps {
   poolRef: React.RefObject<MediaPool>
@@ -192,6 +205,12 @@ export function PreviewStage({
 
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
+  const [guides, setGuides] = useState<SnapGuides>(NO_GUIDES)
+  // Equality-guarded, so a move that doesn't change the engaged set costs no
+  // extra render on top of the one the transform write already forces.
+  const updateGuides = (next: SnapGuides) => {
+    setGuides((prev) => (prev.x === next.x && prev.y === next.y ? prev : next))
+  }
 
   const frameRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -516,14 +535,23 @@ export function PreviewStage({
     if (!g || !el || g.pointerId !== e.pointerId) return
     if (g.kind === 'move') {
       const fr = el.getBoundingClientRect()
-      setClipTransform(
-        g.clipId,
-        applyMove(
-          g.start,
-          (e.clientX - g.startX) / fr.width,
-          (e.clientY - g.startY) / fr.height,
-        ),
+      const moved = applyMove(
+        g.start,
+        (e.clientX - g.startX) / fr.width,
+        (e.clientY - g.startY) / fr.height,
       )
+      // Recomputed from `g.start` every move, so dragging on past a snap line
+      // releases it — no modifier-key escape hatch needed.
+      const clip = clipById(useEditorStore.getState().project, g.clipId)
+      const size = clip ? naturalSizeFor(clip, fr.width, fr.height) : null
+      if (!size) {
+        setClipTransform(g.clipId, moved) // size unknown — degrade to no snap
+        updateGuides(NO_GUIDES)
+        return
+      }
+      const snap = snapMove(moved, size.w, size.h, fr.width, fr.height, SNAP_PX)
+      setClipTransform(g.clipId, snap.transform)
+      updateGuides({ x: snap.guideX, y: snap.guideY })
     } else if (g.kind === 'corner') {
       const fr = el.getBoundingClientRect()
       const clip = clipById(useEditorStore.getState().project, g.clipId)
@@ -603,6 +631,7 @@ export function PreviewStage({
     const g = gestureRef.current
     if (!g || g.pointerId !== e.pointerId) return
     gestureRef.current = null
+    updateGuides(NO_GUIDES) // covers pointerup AND pointercancel
     const el = frameRef.current
     if (!el) return
     el.style.cursor = '' // hand the cursor back to the handles/canvas
@@ -680,6 +709,23 @@ export function PreviewStage({
             </div>
           )}
         </div>
+
+        {/* Canvas alignment guides, shown only while a move gesture has one
+            engaged. %-positioned, so the one-render-stale frameSize can't
+            misplace them; independent of showChrome, since they exist only
+            mid-gesture. Chrome, never composited — so never exported. */}
+        {guides.x != null && (
+          <div
+            className="pointer-events-none absolute inset-y-0 z-20 w-[2px] -translate-x-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
+            style={{ left: `${(guides.x * 100).toFixed(4)}%` }}
+          />
+        )}
+        {guides.y != null && (
+          <div
+            className="pointer-events-none absolute inset-x-0 z-20 h-[2px] -translate-y-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
+            style={{ top: `${(guides.y * 100).toFixed(4)}%` }}
+          />
+        )}
 
         {/* Selection chrome for the selected clip (paused only), positioned by the
             same mediaRect the compositor draws with — never composited/exported. */}

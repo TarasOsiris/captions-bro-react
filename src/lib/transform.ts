@@ -277,6 +277,35 @@ export function rectPoint(
 }
 
 /**
+ * The axis-aligned bounding box of a placed rect, in canvas pixels, with its
+ * rotation applied — the rotated silhouette's extremities, which is what a snap
+ * or an alignment guide has to measure against. At 0° it degenerates to the
+ * plain box, so consumers need no rotation branch of their own. Crop is NOT
+ * applied here; pass a `croppedRect`/`visibleRect` result to bound the visible box.
+ */
+export function rectBounds(r: MediaRect): {
+  left: number
+  right: number
+  top: number
+  bottom: number
+} {
+  const corners = [
+    rectPoint(r, 0, 0),
+    rectPoint(r, 1, 0),
+    rectPoint(r, 1, 1),
+    rectPoint(r, 0, 1),
+  ]
+  const xs = corners.map((p) => p.x)
+  const ys = corners.map((p) => p.y)
+  return {
+    left: Math.min(...xs),
+    right: Math.max(...xs),
+    top: Math.min(...ys),
+    bottom: Math.max(...ys),
+  }
+}
+
+/**
  * A point of a rect named twice over: where it sits ON the box (`fx`/`fy`
  * fractions) and where that has to LAND in canvas pixels. One object rather than
  * four adjacent numbers, which would transpose silently.
@@ -325,6 +354,82 @@ export function applyMove(
   dyFrac: number,
 ): Transform {
   return { ...t, tx: t.tx + dxFrac, ty: t.ty + dyFrac }
+}
+
+/** A move corrected by canvas snapping, plus the guides it engaged. */
+export interface MoveSnap {
+  transform: Transform
+  /** Engaged vertical guide's x, as a fraction of canvas width; null = free. */
+  guideX: number | null
+  /** Engaged horizontal guide's y, as a fraction of canvas height. */
+  guideY: number | null
+}
+
+/**
+ * Pull a proposed move onto the canvas's edges and center lines when it lands
+ * within `thresholdPx` of one. Snaps the VISIBLE (cropped, rotated) box, so what
+ * aligns is what the chrome outlines and the user sees.
+ *
+ * Distances are measured in PIXELS, not in the fractional units `tx`/`ty` live
+ * in — a fraction-based threshold would feel ~1.8× tighter on x than on y for a
+ * 16:9 canvas. Each axis resolves independently; an axis that finds no candidate
+ * returns its input coordinate VERBATIM, so free movement is byte-identical to
+ * an unsnapped drag.
+ */
+export function snapMove(
+  t: Transform,
+  naturalW: number,
+  naturalH: number,
+  canvasW: number,
+  canvasH: number,
+  thresholdPx: number,
+): MoveSnap {
+  if (canvasW <= 0 || canvasH <= 0)
+    return { transform: t, guideX: null, guideY: null }
+  const b = rectBounds(visibleRect(t, naturalW, naturalH, canvasW, canvasH))
+  const x = snapAxis(
+    [(b.left + b.right) / 2, b.left, b.right],
+    [canvasW / 2, 0, canvasW],
+    thresholdPx,
+  )
+  const y = snapAxis(
+    [(b.top + b.bottom) / 2, b.top, b.bottom],
+    [canvasH / 2, 0, canvasH],
+    thresholdPx,
+  )
+  return {
+    transform: {
+      ...t,
+      tx: x ? t.tx + x.delta / canvasW : t.tx,
+      ty: y ? t.ty + y.delta / canvasH : t.ty,
+    },
+    guideX: x ? x.target / canvasW : null,
+    guideY: y ? y.target / canvasH : null,
+  }
+}
+
+/** One axis of `snapMove`: the nearest box-position/target pair inside the
+ *  threshold, or null. Seeded at `thresholdPx` with a strict `<`, like
+ *  `snapTime` — exactly at the threshold does not snap, and a tie resolves to
+ *  whichever candidate came first. Both lists lead with the CENTER, so a
+ *  canvas-wide box shows the one center line rather than both edges. */
+function snapAxis(
+  positions: number[],
+  targets: number[],
+  thresholdPx: number,
+): { delta: number; target: number } | null {
+  let best: { delta: number; target: number } | null = null
+  let bestDist = thresholdPx
+  for (const p of positions) {
+    for (const target of targets) {
+      const dist = Math.abs(target - p)
+      if (dist < bestDist) {
+        bestDist = dist
+        best = { delta: target - p, target }
+      }
+    }
+  }
+  return best
 }
 
 /** Uniformly scale about the center by `factor` (aspect preserved, clamped). */

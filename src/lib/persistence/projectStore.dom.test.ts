@@ -129,9 +129,15 @@ describe('save → load round trip', () => {
   it('reports a failed write instead of losing it silently', () => {
     // The storage-full case: the user must be told their work is not saved,
     // which is the whole reason saveProject returns a boolean.
-    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
-      throw new DOMException('quota', 'QuotaExceededError')
-    })
+    // Spy on the prototype, not the instance: jsdom's Storage is a WebIDL
+    // named-properties object, so assigning `localStorage.setItem` stores a
+    // data item instead of shadowing the method — the instance spy silently
+    // never installs and the real write succeeds.
+    const spy = vi
+      .spyOn(Object.getPrototypeOf(localStorage) as Storage, 'setItem')
+      .mockImplementation(() => {
+        throw new DOMException('quota', 'QuotaExceededError')
+      })
     expect(saveProject(seeded())).toBe(false)
     spy.mockRestore()
     // …and recovers once there is room again.
