@@ -4,18 +4,19 @@
 // the touch tap-to-add affordance both route through it, so they can never
 // diverge.
 //
-// Mirrors useMediaImport's shape — imperative `getState()`, no re-renders, and
-// no undo snapshot of its own. The CALLER snapshots first, exactly as
-// routes/index.tsx wraps importFile.
+// Mirrors useMediaImport's shape — imperative `getState()`, no re-renders.
+// Every insert takes its own undo snapshot (`beginEdit`), so callers don't
+// wrap it and the drop path and tap-to-add path can't disagree about undo.
 //
-// Deliberately a hook rather than a store action: `resetExport` lives in
-// exportSlice while `addClipAtIndex`/`selectClip` live in the document and
-// selection slices, and src/hooks/ is this codebase's home for cross-slice
-// orchestration.
+// Deliberately a hook rather than a store action: `selectClip` lives in the
+// selection slice while `addClipAtIndex` lives in the document slice, and
+// src/hooks/ is this codebase's home for cross-slice orchestration. (Export
+// staleness needs nothing here — every document mutation clears it through
+// the store's touchDocument seam.)
 
 import { useCallback } from 'react'
 import { useEditorStore } from '@/store/editorStore'
-import { insertionIndex, videoTrack } from '@/lib/model/selectors'
+import { insertionIndex, isFreeLane, videoTrack } from '@/lib/model/selectors'
 import { pickOverlayLane, resolveLaneStart } from '@/lib/model/lanes'
 import {
   DEFAULT_TEXT_DURATION_SEC,
@@ -28,11 +29,9 @@ import type { Clip } from '@/lib/model/types'
 import type { TextPreset } from '@/lib/text/presets'
 
 export function useClipInsert() {
-  /** Shared tail of every insert: select the newcomer and drop a stale export. */
+  /** Shared tail of every insert: select the newcomer. */
   const finishInsert = useCallback((clip: Clip) => {
-    const st = useEditorStore.getState()
-    st.selectClip(clip.id)
-    st.resetExport()
+    useEditorStore.getState().selectClip(clip.id)
   }, [])
 
   /** Insert a copy of `assetId` at the boundary nearest `time` (seconds).
@@ -45,6 +44,7 @@ export function useClipInsert() {
       const track = videoTrack(st.project)
       const index = insertionIndex(track.clips, time)
       const clip = clipFromAsset(asset)
+      st.beginEdit()
       st.addClipAtIndex(clip, track.id, index)
       finishInsert(clip)
       return clip.id
@@ -63,6 +63,7 @@ export function useClipInsert() {
       // cannot disagree about the window being claimed.
       const duration = DEFAULT_TEXT_DURATION_SEC
       const start = Math.max(0, time)
+      st.beginEdit()
       const trackId =
         pickOverlayLane(st.project, start, duration) ?? st.addOverlayTrack()
       const clip = createTextClip({
@@ -94,6 +95,7 @@ export function useClipInsert() {
       const st = useEditorStore.getState()
       if (!Object.hasOwn(st.project.assets, assetId)) return null
       const clip = clipFromAsset(st.project.assets[assetId])
+      st.beginEdit() // before place(), which may itself create a lane
       const trackId = place(st, clip)
       if (trackId == null) return null
       st.addClip(clip, trackId)
@@ -109,7 +111,7 @@ export function useClipInsert() {
     (assetId: string, trackId: string, start: number): string | null =>
       insertAssetVia(assetId, (st, clip) => {
         const lane = st.project.tracks.find((t) => t.id === trackId)
-        if (!lane || lane.type !== 'overlay') return null
+        if (!lane || !isFreeLane(lane)) return null
         clip.start = resolveLaneStart(lane.clips, start, clip.duration)
         return trackId
       }),

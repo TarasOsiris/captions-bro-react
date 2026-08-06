@@ -4,6 +4,8 @@
 // you see in the preview is exactly what exports. Any change to this math must be
 // reflected on both consumers — see the invariant note in CLAUDE.md.
 
+import { clamp } from './math'
+
 /**
  * Edge crop: the fraction of the fitted media hidden from each side (0 = keep,
  * 0.5 = trim half away). Insets, not a sub-rect, so they survive scale/rotate
@@ -51,10 +53,6 @@ const MAX_SCALE = 10
 const SNAP_DEG = 4
 /** A trim always leaves at least this fraction of a dimension visible. */
 const MIN_VISIBLE = 0.05
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
-}
 
 /** The placed media rectangle. */
 export interface MediaRect {
@@ -178,7 +176,7 @@ export function visibleRect(
 }
 
 /** A local (unrotated) offset from a rect's center, rotated into canvas space.
- *  The module's ONE rotation matrix — `hitTestClip` inverts it, nothing else
+ *  The module's ONE rotation matrix — `toLocalDelta` inverts it, nothing else
  *  should restate it. */
 function fromCenter(
   r: MediaRect,
@@ -189,6 +187,80 @@ function fromCenter(
   const cos = Math.cos(rad)
   const sin = Math.sin(rad)
   return { x: r.cx + lx * cos - ly * sin, y: r.cy + lx * sin + ly * cos }
+}
+
+/**
+ * A canvas-space delta expressed in a rect's OWN (rotated) axes — the inverse
+ * of `fromCenter`'s rotation, and the only place that inversion is written.
+ * Every gesture that acts along the media's own axes (edge crop, text wrap
+ * width, the hit test) projects through here first.
+ */
+export function toLocalDelta(
+  dx: number,
+  dy: number,
+  rotationDeg: number,
+): { lx: number; ly: number } {
+  const rad = (rotationDeg * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  return { lx: dx * cos + dy * sin, ly: -dx * sin + dy * cos }
+}
+
+/** Is a canvas-space point inside a placed rect? `dx`/`dy` are measured from
+ *  the rect's CENTER (the caller subtracts `cx`/`cy`), so this stays pure of
+ *  any frame/client coordinate system. Hit-test the VISIBLE box, so trimmed
+ *  regions aren't grabbable — pass a `croppedRect`/`visibleRect` result. */
+export function hitTestRect(r: MediaRect, dx: number, dy: number): boolean {
+  const { lx, ly } = toLocalDelta(dx, dy, r.rotationDeg)
+  return Math.abs(lx) <= r.w / 2 && Math.abs(ly) <= r.h / 2
+}
+
+/**
+ * The wrap width a text side-handle drag lands on. ×2 because the transform
+ * holds the block's CENTER fixed: dragging one edge out by `lx` widens the box
+ * by `lx` on BOTH sides.
+ */
+export function wrapWidthForDrag(
+  startBoxWidth: number,
+  side: 'left' | 'right',
+  dx: number,
+  dy: number,
+  rotationDeg: number,
+  frameW: number,
+  bounds: { min: number; max: number },
+): number {
+  const { lx } = toLocalDelta(dx, dy, rotationDeg)
+  const delta = ((side === 'right' ? 1 : -1) * (2 * lx)) / frameW
+  return clamp(startBoxWidth + delta, bounds.min, bounds.max)
+}
+
+/**
+ * The inset value an edge-crop drag lands on: the drag projected onto the
+ * media's own axes, then the on-edge component turned into a fraction of the
+ * full media dimension. Feed the result to `applyCrop`, which does the
+ * clamping.
+ */
+export function cropValueForDrag(
+  start: Transform,
+  edge: keyof CropInsets,
+  dx: number,
+  dy: number,
+  rotationDeg: number,
+  mediaW: number,
+  mediaH: number,
+): number {
+  const { lx, ly } = toLocalDelta(dx, dy, rotationDeg)
+  const c = cropInsets(start)
+  switch (edge) {
+    case 'left':
+      return c.left + lx / mediaW
+    case 'right':
+      return c.right - lx / mediaW
+    case 'top':
+      return c.top + ly / mediaH
+    case 'bottom':
+      return c.bottom - ly / mediaH
+  }
 }
 
 /**

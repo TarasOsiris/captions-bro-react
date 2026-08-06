@@ -107,20 +107,27 @@ export function ensureFontsForClips(clips: Clip[]): Promise<void> {
 }
 
 /**
- * THE export-readiness gate — await this before any encode begins. Capped, so a
- * hung CDN delays an export by seconds rather than forever; past the cap we
- * export in the fallback face, which is strictly better than not exporting.
+ * THE export-readiness gate — await this before any encode begins, on EVERY
+ * path (the fast path used to await `ensureFontsForClips` directly and so had
+ * no cap at all). Capped, so a hung CDN delays an export by seconds rather
+ * than forever; past the cap we export in the fallback face, which is strictly
+ * better than not exporting.
  */
-export function ensureProjectFonts(project: Project): Promise<void> {
+export function ensureExportFonts(clips: Clip[]): Promise<void> {
   if (typeof document === 'undefined') return Promise.resolve()
-  const clips = allClips(project).filter((c) => c.type === 'text')
-  if (clips.length === 0) return Promise.resolve()
+  const text = clips.filter((c) => c.type === 'text')
+  if (text.length === 0) return Promise.resolve()
   return Promise.race([
-    ensureFontsForClips(clips),
+    ensureFontsForClips(text),
     new Promise<void>((resolve) => {
       setTimeout(resolve, EXPORT_FONT_TIMEOUT_MS)
     }),
   ])
+}
+
+/** `ensureExportFonts` over a whole project's text clips. */
+export function ensureProjectFonts(project: Project): Promise<void> {
+  return ensureExportFonts(allClips(project))
 }
 
 /** All picker preview faces in ONE request, fired when the picker first opens. */

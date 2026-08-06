@@ -2,7 +2,7 @@
 // are SSR-safe and unit-testable.
 
 import { DEFAULT_IMAGE_DURATION_SEC } from '@/lib/media'
-import { IDENTITY } from '@/lib/transform'
+import { CANVAS_ASPECT, IDENTITY } from '@/lib/transform'
 import { uid } from './ids'
 import { DEFAULT_TEXT_CONTENT, withTextDefaults } from './text'
 import type {
@@ -16,9 +16,13 @@ import type {
 } from './types'
 
 /** Default output canvas: 1080p 16:9 on black. */
+/** Output height (px); the width is DERIVED from `CANVAS_ASPECT` so the ratio
+ *  has exactly one definition in the codebase (transform.ts). */
+const DEFAULT_CANVAS_HEIGHT = 1080
+
 export const DEFAULT_CANVAS: CanvasSettings = {
-  width: 1920,
-  height: 1080,
+  width: DEFAULT_CANVAS_HEIGHT * CANVAS_ASPECT,
+  height: DEFAULT_CANVAS_HEIGHT,
   background: '#000000',
 }
 

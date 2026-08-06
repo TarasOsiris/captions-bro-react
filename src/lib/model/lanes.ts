@@ -8,8 +8,14 @@
 
 import { clamp } from '@/lib/math'
 import { createTrack } from './factories'
-import { overlayTracks } from './selectors'
+import { isFreeLane, overlayTracks } from './selectors'
 import type { Clip, Project } from './types'
+
+/** Shortest a clip can be (s) — the trim floor. ONE definition: the store
+ *  clamps every commit to it and the Timeline's trim gesture proposes against
+ *  it, and the two used to declare it separately with a comment in each
+ *  pointing at the other. */
+export const MIN_CLIP_DURATION = 0.1
 
 /** Whether `[start, start+duration)` fits on the lane without overlapping any
  *  clip (except `excludeId` — the clip being moved). */
@@ -153,7 +159,7 @@ export function normalizeLaneOverlaps(project: Project): Project {
     ...project,
     tracks: [
       ...project.tracks.map((t) =>
-        t.type === 'overlay' ? { ...t, clips: cleaned.get(t.id)! } : t,
+        isFreeLane(t) ? { ...t, clips: cleaned.get(t.id)! } : t,
       ),
       ...extras.map((clips) => ({ ...createTrack('overlay'), clips })),
     ],

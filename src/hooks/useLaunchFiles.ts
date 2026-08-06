@@ -22,10 +22,11 @@
 //  1. NOT BEFORE HYDRATION. `usePersistence` restores the saved project
 //     asynchronously and installs it with `replaceProject`, which replaces the
 //     document WHOLESALE. An import that lands first is silently erased.
-//  2. NOT DURING AN EXPORT. `useMediaImport.importFile` calls `resetExport()`,
-//     which tears down `ExportScreen` — mid-encode that hides the progress and
-//     cancel button while the encode runs on invisibly; post-encode it strands
-//     the finished MP4, which on iOS is only reachable from that screen.
+//  2. NOT DURING AN EXPORT. Importing mutates the document, and a document
+//     mutation at phase 'done' clears the finished export (the store's
+//     touchDocument seam) — tearing down `ExportScreen` and stranding the
+//     finished MP4, which on iOS is only reachable from that screen.
+//     Mid-encode, an import would edit the project out from under the encode.
 //
 // Files that arrive early are held and flushed when `ready` goes true, so
 // nothing is dropped — the user gets their clip, just at a safe moment.

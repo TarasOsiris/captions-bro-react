@@ -25,6 +25,7 @@ import {
 } from './constants'
 import { SHARE_TTL_MS } from './shareTarget'
 import { THEME_COLOR } from '@/lib/theme'
+import { defaultDescription } from '@/lib/seo'
 
 const publicDir = resolve(import.meta.dirname, '../../../public')
 const swSource = readFileSync(resolve(publicDir, 'sw.js'), 'utf8')
@@ -33,7 +34,15 @@ const manifest = JSON.parse(
 ) as {
   theme_color: string
   start_url: string
+  description: string
+  icons: Array<{ src: string; purpose?: string }>
   share_target: { action: string; params: { files: Array<{ name: string }> } }
+}
+
+/** The string literals inside sw.js's STATIC_PRECACHE_URLS array. */
+function precachedPaths(): string[] {
+  const urls = /const STATIC_PRECACHE_URLS = \[([^\]]*)\]/.exec(swSource)?.[1]
+  return [...(urls ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
 }
 
 /** The value `sw.js` assigns to a top-level `const`. */
@@ -69,8 +78,7 @@ describe('service worker constants', () => {
     expect(swSource).toMatch(/const cache = await caches\.open\(STATIC_CACHE\)/)
     expect(swSource).toContain('STATIC_PRECACHE_URLS.map')
     // Every precached path must actually match the static-asset predicate.
-    const urls = /const STATIC_PRECACHE_URLS = \[([^\]]*)\]/.exec(swSource)?.[1]
-    const paths = [...(urls ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+    const paths = precachedPaths()
     expect(paths.length).toBeGreaterThan(0)
     for (const path of paths) {
       expect(
@@ -78,6 +86,27 @@ describe('service worker constants', () => {
           path.split('?')[0],
         ),
       ).toBe(true)
+    }
+  })
+
+  // The install dialog and the home-screen icon come from the MANIFEST's list;
+  // anything on it that the worker doesn't precache is missing on a
+  // first-visit-then-offline launch. The maskable pair was exactly that.
+  it('precaches every icon the manifest declares', () => {
+    const paths = new Set(precachedPaths())
+    for (const icon of manifest.icons) {
+      expect(paths.has(icon.src)).toBe(true)
+    }
+  })
+
+  // `Cache.match` keys on the FULL url including the query, so a precached
+  // '/x.png' never serves a document's request for '/x.png?v=2'.
+  it('precaches each icon with the exact query the manifest requests', () => {
+    const byFile = new Map(
+      precachedPaths().map((p) => [p.split('?')[0], p] as const),
+    )
+    for (const icon of manifest.icons) {
+      expect(byFile.get(icon.src.split('?')[0])).toBe(icon.src)
     }
   })
 })
@@ -101,5 +130,18 @@ describe('web app manifest', () => {
   // disagrees with the dark theme the app launches with a visible flash.
   it('theme_color matches the dark theme', () => {
     expect(manifest.theme_color).toBe(THEME_COLOR.dark)
+  })
+
+  // The same product claim is written three times — here, in seo.ts's
+  // `defaultDescription`, and as sr-only copy in routes/index.tsx — because the
+  // manifest is JSON and can't import. They are worded for their own medium
+  // (the install dialog truncates), so this pins the CLAIMS rather than the
+  // prose: a positioning change in one place must not leave the others
+  // advertising something else.
+  it('describes the app with the same positioning as the SEO copy', () => {
+    for (const claim of ['free', 'no account', 'no watermark']) {
+      expect(manifest.description.toLowerCase()).toContain(claim)
+      expect(defaultDescription.toLowerCase()).toContain(claim)
+    }
   })
 })

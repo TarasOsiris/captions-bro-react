@@ -127,6 +127,42 @@ describe('setClipTrimWindow on a magnetic track', () => {
   })
 })
 
+describe('magnetic-track timing patches re-pack', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 4), clip('b', 3)]))
+  })
+
+  it('updateClip re-packs after a duration patch', () => {
+    // The real case: a video clip inserted with a placeholder duration learns
+    // its true length from metadata (PreviewStage.onVideoMeta) — the sibling
+    // must ripple, not overlap.
+    useEditorStore.getState().updateClip('a', { duration: 10 })
+    const clips = trackClips()
+    expect(clips.map((c) => c.start)).toEqual([0, 10])
+    expectPacked(clips)
+  })
+
+  it('a start patch cannot unpack the magnetic track', () => {
+    useEditorStore.getState().updateClip('a', { start: 5 })
+    expectPacked(trackClips()) // re-pack owns start; the patch is overridden
+  })
+
+  it('setClipWindow re-packs on the magnetic track', () => {
+    useEditorStore.getState().setClipWindow('a', 3, 2)
+    const clips = trackClips()
+    expect(clips.map((c) => c.duration)).toEqual([2, 3])
+    expect(clips.map((c) => c.start)).toEqual([0, 2]) // start proposal ignored
+    expectPacked(clips)
+  })
+
+  it('a non-timing patch does not disturb the pack', () => {
+    useEditorStore.getState().updateClip('a', { volume: 0.5 })
+    expect(trackClips().map((c) => c.start)).toEqual([0, 4])
+  })
+})
+
 // ── Overlay (text) tracks: free-positioned, never re-packed ──────────────────
 // The magnetic model is right for video and wrong for captions. These tests pin
 // the distinction, because a regression in `repackTrack` would silently drag
@@ -179,13 +215,16 @@ describe('overlay clips are free-positioned', () => {
     overlayId = useEditorStore.getState().addOverlayTrack()
   })
 
-  it('addClip stays a raw primitive: no packing, no lane clamping', () => {
-    // Policy callers (useClipInsert, moveClipToTrack) pre-pick a lane with
-    // room; the primitive itself must not second-guess them — hydration's
-    // normalizeLaneOverlaps is what handles legacy overlapping data.
+  it('addClip clamps a lane insert into a free gap', () => {
+    // The no-overlap invariant holds at EVERY store entry point, not just the
+    // policy callers: useClipInsert pre-resolves with the same geometry (the
+    // clamp is idempotent for a legal start), so only a buggy or legacy caller
+    // ever sees the clamp move a clip.
     useEditorStore.getState().addClip(textClip('t1', 3, 4), overlayId)
     useEditorStore.getState().addClip(textClip('t2', 1, 4), overlayId)
-    expect(overlay()!.clips.map((c) => c.start)).toEqual([3, 1]) // overlapping
+    // Desired [1,5) overlaps t1 [3,7) and 4s does not fit before it → flush
+    // after, at 7.
+    expect(overlay()!.clips.map((c) => c.start)).toEqual([3, 7])
   })
 
   it('addClipAtIndex does not re-pack an overlay track', () => {
@@ -406,6 +445,168 @@ describe('moveClipToNewTrack', () => {
     expect(tracks).toHaveLength(2)
     expect(tracks[1].id).toBe(laneId)
     expect(tracks[1].clips[0].start).toBe(1)
+  })
+})
+
+// ── The document-dirtied seam (store/touch.ts) ───────────────────────────────
+// Every CONTENT action must bump `documentRevision` and clear a stale FINISHED
+// export; asset-metadata writes must not. This table is the backstop for the
+// `mutate` wrapper — a new action wired with raw `set` fails here.
+
+describe('touchDocument seam', () => {
+  const st = () => useEditorStore.getState()
+
+  /** Seed: main clip + overlay text clip + a finished export on the books. */
+  function seedDone() {
+    st().replaceProject(projectWith([clip('a', 5), clip('b', 3)]))
+    const laneId = st().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 0, 2), laneId)
+    useEditorStore.setState({
+      exportPhase: 'done',
+      exportProgress: 1,
+      downloadUrl: 'blob:stale',
+      downloadName: 'stale.mp4',
+    })
+    return laneId
+  }
+
+  const contentActions: [string, () => void][] = [
+    [
+      'addAsset',
+      () => {
+        st().addAsset({
+          id: 'na',
+          kind: 'image',
+          name: 'n.png',
+          sizeBytes: 1,
+          file: new File([], 'n.png'),
+          url: 'blob:n',
+          naturalWidth: 1,
+          naturalHeight: 1,
+          durationSec: null,
+          thumbs: [],
+        })
+      },
+    ],
+    [
+      'addClip',
+      () => {
+        st().addClip(clip('n', 2))
+      },
+    ],
+    [
+      'addClipAtIndex',
+      () => {
+        st().addClipAtIndex(clip('n', 2), trackId(), 0)
+      },
+    ],
+    [
+      'addOverlayTrack',
+      () => {
+        st().addOverlayTrack()
+      },
+    ],
+    [
+      'setClipWindow',
+      () => {
+        st().setClipWindow('t1', 4, 2)
+      },
+    ],
+    [
+      'moveClipToTrack',
+      () => {
+        st().moveClipToTrack('b', trackId(), { index: 0 })
+      },
+    ],
+    [
+      'moveClipToNewTrack',
+      () => {
+        st().moveClipToNewTrack('b', trackId(), 1)
+      },
+    ],
+    [
+      'setClipTrimWindow',
+      () => {
+        st().setClipTrimWindow('a', { start: 0, trimIn: 1, duration: 4 })
+      },
+    ],
+    [
+      'updateClip',
+      () => {
+        st().updateClip('t1', { text: 'x' })
+      },
+    ],
+    [
+      'setClipTransform',
+      () => {
+        st().setClipTransform('a', { ...IDENTITY, tx: 0.1 })
+      },
+    ],
+    [
+      'removeClip',
+      () => {
+        st().removeClip('b')
+      },
+    ],
+    [
+      'splitClip',
+      () => {
+        st().splitClip('a', 2)
+      },
+    ],
+    [
+      'duplicateClip',
+      () => {
+        st().duplicateClip('a')
+      },
+    ],
+    [
+      'replaceProject',
+      () => {
+        st().replaceProject(projectWith([clip('z', 1)]))
+      },
+    ],
+  ]
+
+  for (const [name, run] of contentActions) {
+    it(`${name} bumps the revision and clears a stale finished export`, () => {
+      seedDone()
+      const before = st().documentRevision
+      run()
+      expect(st().documentRevision).toBeGreaterThan(before)
+      expect(st().exportPhase).toBe('idle')
+      expect(st().downloadUrl).toBeNull()
+    })
+  }
+
+  it('updateAsset does NOT clear a finished export (async metadata writer)', () => {
+    st().replaceProject(projectWith([clip('a', 5)]))
+    st().addAsset({
+      id: 'asset_a',
+      kind: 'video',
+      name: 'a.mp4',
+      sizeBytes: 1,
+      file: new File([], 'a.mp4'),
+      url: 'blob:a',
+      naturalWidth: 0,
+      naturalHeight: 0,
+      durationSec: null,
+      thumbs: [],
+    })
+    useEditorStore.setState({ exportPhase: 'done', downloadUrl: 'blob:keep' })
+    const before = st().documentRevision
+    st().updateAsset('asset_a', { thumbs: ['t'] })
+    expect(st().documentRevision).toBe(before)
+    expect(st().exportPhase).toBe('done')
+    expect(st().downloadUrl).toBe('blob:keep')
+  })
+
+  it('a mutation mid-EXPORTING leaves the phase alone (progress UI stays up)', () => {
+    st().replaceProject(projectWith([clip('a', 5)]))
+    useEditorStore.setState({ exportPhase: 'exporting', exportProgress: 0.4 })
+    st().updateClip('a', { volume: 0.5 })
+    expect(st().exportPhase).toBe('exporting')
+    expect(st().exportProgress).toBe(0.4)
   })
 })
 

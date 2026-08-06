@@ -1,6 +1,7 @@
 // Pure lookups over the document tree. Keep SSR-safe and testable.
 
 import { clamp } from '@/lib/math'
+import { createTrack } from './factories'
 import type { Clip, MediaAsset, Project, Track } from './types'
 
 /** Every clip across all tracks, in track order. */
@@ -17,15 +18,6 @@ export function mediaClips(project: Project): Clip[] {
   return allClips(project).filter((c) => c.assetId != null)
 }
 
-/** The first clip in document order, or null. In the single-clip MVP this is the
- *  "active" clip; multi-track selection supersedes it later. */
-export function firstClip(project: Project): Clip | null {
-  for (const track of project.tracks) {
-    if (track.clips.length > 0) return track.clips[0]
-  }
-  return null
-}
-
 export function clipById(project: Project, id: string | null): Clip | null {
   if (id == null) return null
   for (const track of project.tracks) {
@@ -40,9 +32,20 @@ export function trackOfClip(project: Project, id: string): Track | null {
 }
 
 /** The track new clips land on. Single video track today; when an explicit
- *  "active track" arrives, it changes here and nowhere else. */
+ *  "active track" arrives, it changes here and nowhere else.
+ *
+ *  The `?? tracks[0]` fallback was typed as always-present but is `undefined`
+ *  at runtime for a track-less project (which `replaceProject` can install
+ *  from a hand-built or corrupt document). Creating one keeps the return type
+ *  honest — callers get a real track to add to, not a crash one frame later. */
 export function videoTrack(project: Project): Track {
-  return project.tracks.find((t) => t.type === 'video') ?? project.tracks[0]
+  const found = project.tracks.find((t) => t.type === 'video')
+  if (found) return found
+  // `tracks[0]` is TYPED as always present (noUncheckedIndexedAccess is off),
+  // so the length check is the only thing standing between a track-less
+  // document and an `undefined` handed out as a `Track`.
+  if (project.tracks.length > 0) return project.tracks[0]
+  return createTrack('video')
 }
 
 /** Every overlay lane, in array order (bottom of the stack first — z-order).
@@ -50,7 +53,25 @@ export function videoTrack(project: Project): Track {
  *  a text-free project has none. Sibling of `videoTrack`: track routing lives
  *  here and nowhere else. */
 export function overlayTracks(project: Project): Track[] {
-  return project.tracks.filter((t) => t.type === 'overlay')
+  return project.tracks.filter(isFreeLane)
+}
+
+/**
+ * The distinction the editor actually branches on — NOT the three track types.
+ *
+ * A FREE lane holds clips at arbitrary times (text and picture-in-picture);
+ * they never overlap a lane sibling, but nothing packs them. A MAGNETIC track
+ * (the one main video track) is laid gapless from t=0, so any edit ripples
+ * through its neighbours. Named predicates because the raw
+ * `track.type === 'overlay'` test appeared at a dozen sites and reads as an
+ * implementation detail rather than the rule it encodes.
+ */
+export function isFreeLane(track: Track): boolean {
+  return track.type === 'overlay'
+}
+
+export function isMagnetic(track: Track): boolean {
+  return !isFreeLane(track)
 }
 
 /** Every edge a free-positioned clip can snap to: 0, the playhead, and both ends

@@ -10,7 +10,7 @@
 import { canvasMeasurer, fontsVersion } from '@/lib/text/measure'
 import { layoutTextCached, paintText } from '@/lib/text/layout'
 import { withTextDefaults } from '@/lib/model/text'
-import { assetOf, clipAspect } from '@/lib/model/selectors'
+import { clipAspect } from '@/lib/model/selectors'
 import { containFit } from '@/lib/transform'
 import type { RenderSource } from './compositor'
 import type { Clip, Project } from '@/lib/model/types'
@@ -84,10 +84,4 @@ export function clipNaturalSize(
   const aspect = clipAspect(project, clip)
   if (aspect == null) return null
   return containFit(aspect, canvasW, canvasH)
-}
-
-/** Whether a clip has a decodable asset — the guard both export paths use to
- *  tell "media that isn't ready" from "a clip that never had an asset". */
-export function hasAsset(project: Project, clip: Clip): boolean {
-  return assetOf(project, clip) != null
 }

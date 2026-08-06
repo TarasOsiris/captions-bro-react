@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Blend,
   ChevronLeft,
@@ -24,7 +24,6 @@ import {
   assetOf,
   clipById,
   freeTrimWindow,
-  insertionIndex,
   projectDuration,
   resolveTrim,
   revealTime,
@@ -32,36 +31,47 @@ import {
   snapTime,
   videoTrack,
 } from '@/lib/model/selectors'
-import { laneHasRoom, resolveLaneStart } from '@/lib/model/lanes'
 import { assetClipDuration } from '@/lib/model/factories'
+import {
+  classifyLaneZone,
+  resolveAssetDrop,
+  resolveClipDrop,
+  sameDropTarget,
+} from '@/lib/timeline/dropResolver'
+import {
+  TRACK_PAD,
+  boundaryX,
+  tickModel,
+  timeToX,
+  xToTime,
+} from '@/lib/timeline/ruler'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { NUDGE_SEC } from '@/hooks/useEditorKeyboard'
 import { DEFAULT_IMAGE_DURATION_SEC, formatTimecode } from '@/lib/media'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
-import { clamp } from '@/lib/utils'
+import { clamp } from '@/lib/math'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 import { TIMELINE_PX_PER_SEC, TIMELINE_TILE_W } from '@/lib/thumbs'
+import { MIN_CLIP_DURATION } from '@/lib/model/lanes'
+import type {
+  DropTarget,
+  LaneRect,
+  LaneZone,
+} from '@/lib/timeline/dropResolver'
 import type { Clip, Track } from '@/lib/model/types'
 
 interface TimelineProps {
   onTogglePlay: () => void
   onSeek: (t: number) => void
-  /** Snapshot for undo before a structural edit (split/duplicate/delete). */
-  onEditStart: () => void
 }
 
-/** Horizontal inset (px) so overhanging clip chrome stays on-screen at scroll ends. */
-const TRACK_PAD = 24
 /** Visual seam (px) inset between adjacent clips — purely presentational; the
  *  document model stays gapless (repackTrack). Centered on each true boundary,
  *  so the playhead and insertion caret still land in the middle of it. */
 const CLIP_GAP = 4
-const MIN_LABEL_PX = 56
 const RULER_FALLBACK_SEC = 30
 /** Pointer travel (px) before a clip press becomes a drag rather than a click. */
 const DRAG_THRESHOLD = 4
-/** Shortest a clip can be trimmed to (s), so a trimmed clip stays grabbable. */
-const MIN_CLIP_DURATION = 0.1
 /** How close (px) a dragged overlay clip must get to an edge before it snaps. */
 const SNAP_PX = 8
 /** How near (px) the pointer must be to the scroll viewport's top/bottom edge
@@ -69,113 +79,55 @@ const SNAP_PX = 8
 const EDGE_SCROLL_ZONE = 24
 const EDGE_SCROLL_STEP = 8
 
-/**
- * Where an in-flight drag would land, resolved from the pointer by ONE
- * function for the indicator and the commit, so they cannot disagree.
- * - `main`: the magnetic track — an insertion slot and its caret.
- * - `lane`: a free spot on an existing overlay lane (the outline shows the
- *   exact landing window, which may be clamped away from the pointer).
- * - `seam`: between lanes / above the stack — a NEW lane directly above
- *   `belowTrackId` (array order is z-order, so above = later in the array).
- */
-type DropTarget =
-  | { kind: 'main'; trackId: string; index: number; caretX: number }
-  | { kind: 'lane'; trackId: string; start: number; duration: number }
-  | { kind: 'seam'; belowTrackId: string; seamY: number; start: number }
-
-/** Half-gap (px) the seam indicator sits above a lane. */
-const SEAM_OFFSET_PX = 5
-
-/** The pointer zone the vertical hit-test resolves: a lane body (with the
- *  seam-above-it position precomputed from the same rect read) or a gap. */
-type LaneZone =
-  | { kind: 'main' | 'lane'; track: Track; seamYAbove: number }
-  | { kind: 'seam'; belowTrackId: string; seamY: number }
-
-/** The seam drop directly above a zone's lane — where a new lane grows. */
-function seamOf(
-  zone: { track: Track; seamYAbove: number },
-  start: number,
-): DropTarget {
-  return {
-    kind: 'seam',
-    belowTrackId: zone.track.id,
-    seamY: zone.seamYAbove,
-    start,
-  }
-}
-
-/** Land on the lane if the window fits, else stack onto a new lane above it —
- *  the shared tail of both drag resolvers. */
-function laneOrSeam(
-  zone: { track: Track; seamYAbove: number },
-  start: number,
-  duration: number,
-): DropTarget {
-  return laneHasRoom(zone.track.clips, start, duration)
-    ? { kind: 'lane', trackId: zone.track.id, start, duration }
-    : seamOf(zone, start)
-}
-
-/** Drag indicators re-resolve at pointer rate (dragover restates an unchanged
- *  target continuously); value-compare so an unchanged target keeps its object
- *  identity and React bails out of the re-render. */
-function sameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
-  if (a === b) return true
-  if (!a || !b || a.kind !== b.kind) return false
-  switch (a.kind) {
-    case 'main':
-      return (
-        b.kind === 'main' &&
-        a.trackId === b.trackId &&
-        a.index === b.index &&
-        a.caretX === b.caretX
-      )
-    case 'lane':
-      return (
-        b.kind === 'lane' &&
-        a.trackId === b.trackId &&
-        a.start === b.start &&
-        a.duration === b.duration
-      )
-    case 'seam':
-      return (
-        b.kind === 'seam' &&
-        a.belowTrackId === b.belowTrackId &&
-        a.seamY === b.seamY &&
-        a.start === b.start
-      )
-  }
-}
-
-/** X (px) of the boundary before `index` on a packed track — where an inserted/
- *  moved clip's left edge will land. Mirrors the clip-left math in ClipBox. */
-function boundaryX(clips: Clip[], index: number): number {
-  let t = 0
-  for (let i = 0; i < index && i < clips.length; i++) t += clips[i].duration
-  return TRACK_PAD + t * TIMELINE_PX_PER_SEC
-}
-
-/** Major-tick spacing (s) — smallest that keeps labels ≥MIN_LABEL_PX apart. */
-function tickStep(): number {
-  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
-  for (const s of steps) {
-    if (s * TIMELINE_PX_PER_SEC >= MIN_LABEL_PX) return s
-  }
-  return 1800
-}
+/** The ruler's tick marks + labels, alone. This row is ~150 absolutely-placed
+ *  spans and the Timeline re-renders EVERY FRAME during playback (it
+ *  subscribes `currentTime`), so the ticks memoize on the one thing they
+ *  depend on — the ruler's width. */
+const RulerTicks = memo(function RulerTicks({ width }: { width: number }) {
+  return (
+    <>
+      {tickModel(width).map(({ t, major }) => {
+        const left = `${timeToX(t).toFixed(2)}px`
+        return major ? (
+          <div key={t}>
+            <span
+              className="absolute top-0 -translate-x-1/2 font-mono text-[10px] tabular-nums text-muted/70"
+              style={{ left }}
+            >
+              {formatTimecode(t).replace(/\.\d$/, '')}
+            </span>
+            <span
+              className="absolute bottom-0 h-1.5 w-px bg-muted/40"
+              style={{ left }}
+            />
+          </div>
+        ) : (
+          <span
+            key={t}
+            className="absolute bottom-0 h-1 w-px bg-muted/20"
+            style={{ left }}
+          />
+        )
+      })}
+    </>
+  )
+})
 
 /**
  * Memoized on purpose. immer hands out a NEW `project` object on every document
  * mutation, and Timeline subscribes to it wholesale — so without this, dragging
  * an inspector slider (or a preview handle) re-renders every clip on the
- * timeline at 60fps. `clip` and `track` keep their identity under immer unless
- * that clip actually changed, and every handler prop above is a stable
- * `useCallback`, so this memo genuinely holds.
+ * timeline at 60fps. `clip` keeps its identity under immer unless that clip
+ * actually changed, and every handler prop above is a stable `useCallback`, so
+ * this memo genuinely holds. The track arrives as PRIMITIVES (`trackId`,
+ * `trackType`) deliberately: the whole `Track` object gets a new identity when
+ * ANY sibling on the lane changes, which silently defeated this memo — a trim
+ * drag re-rendered every ClipBox on the lane at pointer rate.
  */
 const ClipBox = memo(function ClipBox({
   clip,
-  track,
+  trackId,
+  trackType,
   selected,
   dragging,
   dragOffsetX,
@@ -189,17 +141,22 @@ const ClipBox = memo(function ClipBox({
   onTrimUp,
 }: {
   clip: Clip
-  track: Track
+  trackId: string
+  trackType: Track['type']
   selected: boolean
   /** True while this clip is the one being repositioned (lifts + offsets it). */
   dragging: boolean
   dragOffsetX: number
   dragOffsetY: number
-  onPointerDownClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
-  onPointerMoveClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
-  onPointerUpClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  onPointerDownClip: (
+    clip: Clip,
+    trackId: string,
+    e: React.PointerEvent,
+  ) => void
+  onPointerMoveClip: (clip: Clip, e: React.PointerEvent) => void
+  onPointerUpClip: (clip: Clip, e: React.PointerEvent) => void
   /** Distinct from up: the gesture was TAKEN AWAY, so it must not commit. */
-  onPointerCancelClip: (clip: Clip, track: Track, e: React.PointerEvent) => void
+  onPointerCancelClip: (clip: Clip, e: React.PointerEvent) => void
   onTrimDown: (
     clip: Clip,
     edge: 'left' | 'right',
@@ -211,13 +168,13 @@ const ClipBox = memo(function ClipBox({
   const asset = useEditorStore((s) => assetOf(s.project, clip))
   // Only the packed video track gets a seam; the overlay lane is free-positioned
   // and semantically has no "transition between clips", so it stays byte-identical.
-  const gap = track.type === 'video' ? CLIP_GAP : 0
+  const gap = trackType === 'video' ? CLIP_GAP : 0
   const rawWidth = clip.duration * TIMELINE_PX_PER_SEC
   // Half the gap comes off each side, so the seam is centered on the real
   // boundary (where the playhead / insertion caret already sit). Clamp so a
   // ~0.1s sliver clip (MIN_CLIP_DURATION → 4px) can't collapse to zero/negative.
   const width = Math.max(rawWidth - gap, 2)
-  const left = TRACK_PAD + clip.start * TIMELINE_PX_PER_SEC + gap / 2
+  const left = timeToX(clip.start) + gap / 2
   const thumbs = asset?.thumbs ?? []
   // Filmstrip frames are sampled across the whole asset; map each tile to the
   // clip's trimmed source window [trimIn, trimIn+duration] so trims scrub visibly.
@@ -228,16 +185,16 @@ const ClipBox = memo(function ClipBox({
   return (
     <div
       onPointerDown={(e) => {
-        onPointerDownClip(clip, track, e)
+        onPointerDownClip(clip, trackId, e)
       }}
       onPointerMove={(e) => {
-        onPointerMoveClip(clip, track, e)
+        onPointerMoveClip(clip, e)
       }}
       onPointerUp={(e) => {
-        onPointerUpClip(clip, track, e)
+        onPointerUpClip(clip, e)
       }}
       onPointerCancel={(e) => {
-        onPointerCancelClip(clip, track, e)
+        onPointerCancelClip(clip, e)
       }}
       style={{
         left: `${left.toFixed(2)}px`,
@@ -351,7 +308,7 @@ const ClipBox = memo(function ClipBox({
   )
 })
 
-export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
+export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   const project = useEditorStore((s) => s.project)
   const currentTime = useEditorStore((s) => s.currentTime)
   const playing = useEditorStore((s) => s.playing)
@@ -412,7 +369,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     origStart: number
     origTrimIn: number
     origDuration: number
-    snapshotted: boolean
+    /** Threshold latch: true once the drag has actually moved. */
+    moved: boolean
   } | null>(null)
   // Where the in-flight drag (clip reposition OR panel drop) would land.
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
@@ -435,8 +393,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const contentWidth = rulerDuration * TIMELINE_PX_PER_SEC
   const rulerWidth = Math.max(contentWidth, viewportWidth - TRACK_PAD * 2)
   const trackWidth = TRACK_PAD * 2 + rulerWidth
-  const playheadX =
-    TRACK_PAD + clamp(currentTime, 0, rulerDuration) * TIMELINE_PX_PER_SEC
+  const playheadX = timeToX(clamp(currentTime, 0, rulerDuration))
 
   const selectedClip = clipById(project, selectedClipId)
   const canSplit =
@@ -447,9 +404,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const seekFromClientX = (clientX: number) => {
     const el = scrubRef.current
     if (!el) return
-    const rect = el.getBoundingClientRect()
-    const t = (clientX - rect.left - TRACK_PAD) / TIMELINE_PX_PER_SEC
-    onSeek(clamp(t, 0, total))
+    onSeek(clamp(xToTime(clientX - el.getBoundingClientRect().left), 0, total))
   }
 
   const selectClipAt = useCallback(
@@ -469,51 +424,38 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   const clientXToTime = useCallback((clientX: number) => {
     const el = scrubRef.current
     if (!el) return 0
-    const rect = el.getBoundingClientRect()
-    return Math.max(0, (clientX - rect.left - TRACK_PAD) / TIMELINE_PX_PER_SEC)
+    return xToTime(clientX - el.getBoundingClientRect().left)
   }, [])
 
   /** Lanes worth drawing: always the video track, plus any overlay track that
-   *  actually holds something (the store prunes those, so this is a backstop). */
-  const visibleTracks = project.tracks.filter(
-    (t) => t.type !== 'overlay' || t.clips.length > 0,
+   *  actually holds something (the store prunes those, so this is a backstop).
+   *  Memoized on `project` so playback frames (currentTime re-renders) don't
+   *  rebuild the arrays — and the reversed copy for rendering with it. */
+  const visibleTracks = useMemo(
+    () =>
+      project.tracks.filter((t) => t.type !== 'overlay' || t.clips.length > 0),
+    [project],
+  )
+  const reversedTracks = useMemo(
+    () => [...visibleTracks].reverse(),
+    [visibleTracks],
   )
 
-  /** Which lane (or seam between lanes) `clientY` is over, from the rendered
-   *  lanes' live rects. Everything above the top lane — the sticky ruler
-   *  included — is the "new topmost lane" seam; everything below the bottom
-   *  (main) lane still targets it. Y values are scrubRef-relative, which is
-   *  scroll-invariant (lanes and scrub surface move together). */
-  const classifyLaneZone = useCallback((clientY: number): LaneZone | null => {
+  /** Which lane (or seam between lanes) `clientY` is over. The only DOM part is
+   *  gathering the live lane rects; `classifyLaneZone` is pure over them (and
+   *  unit-tested). Y values are scrubRef-relative, which is scroll-invariant
+   *  (lanes and scrub surface move together). */
+  const laneZoneAt = useCallback((clientY: number): LaneZone | null => {
     const scrubRect = scrubRef.current?.getBoundingClientRect()
     if (!scrubRect) return null
-    const tracks = useEditorStore.getState().project.tracks
-    // Walk in VISUAL order — top of the stack first, i.e. the tracks array
-    // (z-order, bottom-up) backwards.
-    let above: DOMRect | null = null
-    for (let i = tracks.length - 1; i >= 0; i--) {
-      const el = laneElsRef.current.get(tracks[i].id)
+    const lanes: LaneRect[] = []
+    for (const track of useEditorStore.getState().project.tracks) {
+      const el = laneElsRef.current.get(track.id)
       if (!el) continue
       const rect = el.getBoundingClientRect()
-      if (clientY < rect.top) {
-        // In the gap above this lane (above the whole stack when none is).
-        const gapTop = above?.bottom ?? rect.top - 2 * SEAM_OFFSET_PX
-        return {
-          kind: 'seam',
-          belowTrackId: tracks[i].id,
-          seamY: (gapTop + rect.top) / 2 - scrubRect.top,
-        }
-      }
-      if (clientY <= rect.bottom || i === 0) {
-        return {
-          kind: tracks[i].type === 'video' ? 'main' : 'lane',
-          track: tracks[i],
-          seamYAbove: rect.top - scrubRect.top - SEAM_OFFSET_PX,
-        }
-      }
-      above = rect
+      lanes.push({ track, top: rect.top, bottom: rect.bottom })
     }
-    return null
+    return classifyLaneZone(lanes, clientY, scrubRect.top)
   }, [])
 
   /** `raw` snapped to nearby clip edges and the playhead — the shared drag
@@ -562,61 +504,35 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     playheadDragRef.current = null
   }
 
-  /** Where the dragged CLIP would land, from the live pointer. One resolver
-   *  for the indicator (move) and the commit (up), so they cannot disagree. */
-  const resolveClipDrop = useCallback(
+  /** Where the dragged CLIP would land, from the live pointer. One resolver for
+   *  the indicator (move) and the commit (up), so they cannot disagree. The
+   *  RULES live in lib/timeline/dropResolver (pure, tested); this only supplies
+   *  the live pointer geometry — including the in-flight gesture, which the old
+   *  version read out of the ref internally, making "resolve before teardown"
+   *  an invisible constraint. */
+  const resolveClipDropAt = useCallback(
     (
       clip: Clip,
+      drag: { startClientX: number; sourceTrackId: string },
       e: { clientX: number; clientY: number },
     ): DropTarget | null => {
-      const d = clipDragRef.current
-      const zone = classifyLaneZone(e.clientY)
-      if (!d || !zone) return null
-      // The everyday magnetic reorder needs no snap math — slot and caret only.
-      if (zone.kind === 'main' && clip.type !== 'text') {
-        const index = insertionIndex(
-          zone.track.clips,
-          clientXToTime(e.clientX),
+      const zone = laneZoneAt(e.clientY)
+      if (!zone) return null
+      return resolveClipDrop({
+        zone,
+        clip,
+        sourceTrackId: drag.sourceTrackId,
+        // Time from the drag DELTA, not the pointer — the grab point inside the
+        // clip stays under the finger. Snapped to nearby edges (every lane's
+        // clip edges are targets) so captions land flush against cuts.
+        snappedStart: snapStart(
+          clip.start + (e.clientX - drag.startClientX) / TIMELINE_PX_PER_SEC,
           clip.id,
-        )
-        const others = zone.track.clips.filter((c) => c.id !== clip.id)
-        return {
-          kind: 'main',
-          trackId: zone.track.id,
-          index,
-          caretX: boundaryX(others, index),
-        }
-      }
-      // Time from the drag DELTA, not the pointer — the grab point inside the
-      // clip stays under the finger. Snapped to nearby edges (every lane's clip
-      // edges are targets) so captions land flush against cuts.
-      const snapped = snapStart(
-        clip.start + (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC,
-        clip.id,
-      )
-      if (zone.kind === 'seam') return { ...zone, start: snapped }
-      // Text never joins the magnetic track — remap to the lowest overlay
-      // position, a new lane directly above the main one.
-      if (zone.kind === 'main') return seamOf(zone, snapped)
-      // An overlay lane. Within its own lane a clip clamps flush against its
-      // siblings (it never spawns a lane by sliding sideways); arriving from
-      // elsewhere onto occupied time means "stack it" — a new lane above.
-      if (d.sourceTrackId === zone.track.id) {
-        return {
-          kind: 'lane',
-          trackId: zone.track.id,
-          start: resolveLaneStart(
-            zone.track.clips,
-            snapped,
-            clip.duration,
-            clip.id,
-          ),
-          duration: clip.duration,
-        }
-      }
-      return laneOrSeam(zone, snapped, clip.duration)
+        ),
+        timeAtPointer: clientXToTime(e.clientX),
+      })
     },
-    [classifyLaneZone, snapStart, clientXToTime],
+    [laneZoneAt, snapStart, clientXToTime],
   )
 
   /** Tear down a clip-reposition gesture: release capture and clear both the
@@ -633,7 +549,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
   // --- Reposition a clip already on the timeline (pointer-capture gesture) ---
   const onClipPointerDown = useCallback(
-    (clip: Clip, track: Track, e: React.PointerEvent) => {
+    (clip: Clip, trackId: string, e: React.PointerEvent) => {
       if (!isPrimaryPointer(e) || gestureBusy()) return
       // Don't let the press reach the scrub handler (which seeks + deselects).
       e.stopPropagation()
@@ -643,7 +559,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
         clipId: clip.id,
         startClientX: e.clientX,
         startClientY: e.clientY,
-        sourceTrackId: track.id,
+        sourceTrackId: trackId,
         moved: false,
       }
       selectClipAt(clip)
@@ -652,7 +568,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   )
 
   const onClipPointerMove = useCallback(
-    (clip: Clip, _track: Track, e: React.PointerEvent) => {
+    (clip: Clip, e: React.PointerEvent) => {
       const d = clipDragRef.current
       if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
       const dx = e.clientX - d.startClientX
@@ -662,7 +578,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
         d.moved = true
       }
       setClipDrag({ clipId: clip.id, offsetX: dx, offsetY: dy })
-      updateDropTarget(resolveClipDrop(clip, e))
+      updateDropTarget(resolveClipDropAt(clip, d, e))
       // Nudge the lanes into view when the pointer nears the viewport's
       // vertical edges — rects are re-read per move, so the hit-test stays
       // correct across the scroll.
@@ -676,22 +592,21 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
         }
       }
     },
-    [resolveClipDrop],
+    [resolveClipDropAt, updateDropTarget],
   )
 
   const onClipPointerUp = useCallback(
-    (clip: Clip, _track: Track, e: React.PointerEvent) => {
+    (clip: Clip, e: React.PointerEvent) => {
       const d = clipDragRef.current
       if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-      // Resolve BEFORE teardown (the resolver reads the gesture ref).
-      const target = d.moved ? resolveClipDrop(clip, e) : null
+      const target = d.moved ? resolveClipDropAt(clip, d, e) : null
       releaseClipDrag(e.currentTarget, e.pointerId)
       if (!target) return
       // Snapshot immediately before the (single) mutation, not when the drag
       // crosses the threshold — so an abandoned drag leaves no undo entry.
       // `moveClipToTrack` is same-track-safe, so one action covers reorder,
       // re-time and cross-lane moves alike.
-      onEditStart()
+      useEditorStore.getState().beginEdit()
       switch (target.kind) {
         case 'main':
           moveClipToTrack(clip.id, target.trackId, { index: target.index })
@@ -703,20 +618,14 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
           moveClipToNewTrack(clip.id, target.belowTrackId, target.start)
       }
     },
-    [
-      releaseClipDrag,
-      resolveClipDrop,
-      onEditStart,
-      moveClipToTrack,
-      moveClipToNewTrack,
-    ],
+    [releaseClipDrag, resolveClipDropAt, moveClipToTrack, moveClipToNewTrack],
   )
 
   /** The browser took the gesture (native pan, OS interrupt). Drop it silently:
    *  no reorder, and — because the snapshot happens at the commit point — no
    *  stray undo entry either. */
   const onClipPointerCancel = useCallback(
-    (clip: Clip, _track: Track, e: React.PointerEvent) => {
+    (clip: Clip, e: React.PointerEvent) => {
       const d = clipDragRef.current
       if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
       releaseClipDrag(e.currentTarget, e.pointerId)
@@ -739,7 +648,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
         origStart: clip.start,
         origTrimIn: clip.trimIn,
         origDuration: clip.duration,
-        snapshotted: false,
+        moved: false,
       }
     },
     [gestureBusy],
@@ -750,10 +659,11 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
       const d = trimDragRef.current
       if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
       const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
-      if (!d.snapshotted) {
+      if (!d.moved) {
         if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
-        d.snapshotted = true
-        onEditStart() // one undo snapshot for the whole gesture
+        d.moved = true
+        // One undo entry for the whole gesture; ended on pointer up/cancel.
+        useEditorStore.getState().beginEditSession()
       }
       // A still image has no source timeline; video is bounded by its intrinsic length.
       const st = useEditorStore.getState()
@@ -782,7 +692,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
         ),
       )
     },
-    [onEditStart, setClipTrimWindow],
+    [setClipTrimWindow],
   )
 
   // Shared by up AND cancel: the trim is applied live on every move, so ending
@@ -792,6 +702,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
     releaseCapture(e.currentTarget, e.pointerId)
     trimDragRef.current = null
+    useEditorStore.getState().endEditSession()
   }, [])
 
   // --- Drop a media item from the panel onto the timeline (HTML5 DnD) ---
@@ -801,36 +712,25 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
   /** Where the dragged ASSET would land. `assetId` comes from the store during
    *  dragover (dataTransfer is unreadable until drop) and from the drop event
    *  itself on commit — both name the same asset, so preview and commit agree. */
-  const resolveAssetDrop = useCallback(
+  const resolveAssetDropAt = useCallback(
     (
       e: { clientX: number; clientY: number },
       assetId: string | null,
-    ): DropTarget | null => {
+    ): DropTarget => {
       const st = useEditorStore.getState()
-      const main = videoTrack(st.project)
-      const zone = classifyLaneZone(e.clientY)
       const time = clientXToTime(e.clientX)
-      if (!zone || zone.kind === 'main') {
-        const index = insertionIndex(main.clips, time)
-        return {
-          kind: 'main',
-          trackId: main.id,
-          index,
-          caretX: boundaryX(main.clips, index),
-        }
-      }
       // The committed clip gets its duration from `clipFromAsset`; sizing the
       // preview with the same `assetClipDuration` keeps the two in agreement.
       const asset = assetId != null ? st.project.assets[assetId] : undefined
-      const duration = asset
-        ? assetClipDuration(asset)
-        : DEFAULT_IMAGE_DURATION_SEC
-      const start = snapStart(time)
-      if (zone.kind === 'seam') return { ...zone, start }
-      // Occupied time on that lane ⇒ stack: a new lane directly above it.
-      return laneOrSeam(zone, start, duration)
+      return resolveAssetDrop({
+        zone: laneZoneAt(e.clientY),
+        mainTrack: videoTrack(st.project),
+        duration: asset ? assetClipDuration(asset) : DEFAULT_IMAGE_DURATION_SEC,
+        snappedStart: snapStart(time),
+        timeAtPointer: time,
+      })
     },
-    [classifyLaneZone, snapStart, clientXToTime],
+    [laneZoneAt, snapStart, clientXToTime],
   )
 
   const onTimelineDragOver = (e: React.DragEvent) => {
@@ -838,7 +738,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     updateDropTarget(
-      resolveAssetDrop(e, useEditorStore.getState().draggingAssetId),
+      resolveAssetDropAt(e, useEditorStore.getState().draggingAssetId),
     )
   }
 
@@ -853,10 +753,10 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
     const assetId = e.dataTransfer.getData(MEDIA_ASSET_MIME)
     if (!assetId) return
     e.preventDefault()
-    const target = resolveAssetDrop(e, assetId)
-    onEditStart()
-    // Same seam the touch tap-to-add path uses (see useClipInsert).
-    if (!target || target.kind === 'main') {
+    const target = resolveAssetDropAt(e, assetId)
+    // Same seam the touch tap-to-add path uses (see useClipInsert), which
+    // takes the undo snapshot itself.
+    if (target.kind === 'main') {
       insertAssetAtTime(assetId, clientXToTime(e.clientX))
     } else if (target.kind === 'lane') {
       insertAssetOnLane(assetId, target.trackId, target.start)
@@ -867,29 +767,21 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
 
   const doSplit = () => {
     if (!selectedClip || !canSplit) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     splitClip(selectedClip.id, currentTime)
     selectClip(null)
   }
   const doDuplicate = () => {
     if (!selectedClip) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     const id = duplicateClip(selectedClip.id)
     if (id) selectClip(id)
   }
   const doDelete = () => {
     if (!selectedClip) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     removeClip(selectedClip.id)
     selectClip(null)
-  }
-
-  const step = tickStep()
-  const minorStep = step / 5
-  const tickCount = Math.floor(rulerWidth / TIMELINE_PX_PER_SEC / minorStep)
-  const ticks: Array<{ t: number; major: boolean }> = []
-  for (let i = 0; i <= tickCount; i++) {
-    ticks.push({ t: i * minorStep, major: i % 5 === 0 })
   }
 
   const tools = [
@@ -1124,29 +1016,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
               the lanes do. `scrubRef`'s left edge is unaffected, so
               clientXToTime needs no change. */}
           <div className="sticky top-0 z-20 h-6 bg-surface/95 backdrop-blur-sm">
-            {ticks.map(({ t, major }) => {
-              const left = `${(TRACK_PAD + t * TIMELINE_PX_PER_SEC).toFixed(2)}px`
-              return major ? (
-                <div key={t}>
-                  <span
-                    className="absolute top-0 -translate-x-1/2 font-mono text-[10px] tabular-nums text-muted/70"
-                    style={{ left }}
-                  >
-                    {formatTimecode(t).replace(/\.\d$/, '')}
-                  </span>
-                  <span
-                    className="absolute bottom-0 h-1.5 w-px bg-muted/40"
-                    style={{ left }}
-                  />
-                </div>
-              ) : (
-                <span
-                  key={t}
-                  className="absolute bottom-0 h-1 w-px bg-muted/20"
-                  style={{ left }}
-                />
-              )
-            })}
+            <RulerTicks width={rulerWidth} />
 
             {/* The knob is the grab target: a transparent 44×36 box around a
                 9px marker. `touch-none` claims the drag from the scroller, so
@@ -1196,7 +1066,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
             // REVERSED: array order is z-order bottom-up, so the last track —
             // the top compositing layer — renders as the TOP lane and the
             // magnetic main track sits at the bottom, CapCut-style.
-            [...visibleTracks].reverse().map((track) => (
+            reversedTracks.map((track) => (
               <div
                 key={track.id}
                 ref={(el) => {
@@ -1227,7 +1097,8 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                   <ClipBox
                     key={clip.id}
                     clip={clip}
-                    track={track}
+                    trackId={track.id}
+                    trackType={track.type}
                     selected={clip.id === selectedClipId}
                     dragging={clipDrag?.clipId === clip.id}
                     dragOffsetX={
@@ -1262,7 +1133,7 @@ export function Timeline({ onTogglePlay, onSeek, onEditStart }: TimelineProps) {
                     <div
                       className="pointer-events-none absolute inset-y-0 z-20 rounded-[9px] border-2 border-select/80 bg-select/10"
                       style={{
-                        left: `${(TRACK_PAD + dropTarget.start * TIMELINE_PX_PER_SEC).toFixed(2)}px`,
+                        left: `${timeToX(dropTarget.start).toFixed(2)}px`,
                         width: `${(dropTarget.duration * TIMELINE_PX_PER_SEC).toFixed(2)}px`,
                       }}
                     />

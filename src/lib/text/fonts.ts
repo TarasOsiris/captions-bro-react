@@ -13,11 +13,6 @@ export interface FontDef {
   category: FontCategory
 }
 
-export const DEFAULT_FONT_FAMILY = 'Inter'
-
-/** Used when a family is missing, blocked or still loading. */
-export const FALLBACK_STACK = 'system-ui, -apple-system, sans-serif'
-
 export const TEXT_FONTS: FontDef[] = [
   // Sans — the workhorses.
   { family: 'Inter', category: 'sans' },

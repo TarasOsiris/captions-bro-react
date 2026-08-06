@@ -11,7 +11,7 @@
  */
 export function rafThrottle<TArgs extends unknown[]>(
   fn: (...args: TArgs) => void,
-): ((...args: TArgs) => void) & { cancel: () => void } {
+): ((...args: TArgs) => void) & { cancel: () => void; flush: () => void } {
   let handle = 0
   let latest: TArgs | null = null
 
@@ -30,6 +30,17 @@ export function rafThrottle<TArgs extends unknown[]>(
     if (handle !== 0) cancelAnimationFrame(handle)
     handle = 0
     latest = null
+  }
+
+  /** Run the pending call NOW (or nothing, if none is pending). For commit
+   *  points: the last throttled write must land inside the editing session
+   *  that owns it, not on a frame after the session closed. */
+  throttled.flush = () => {
+    if (handle !== 0) cancelAnimationFrame(handle)
+    handle = 0
+    const next = latest
+    latest = null
+    if (next) fn(...next)
   }
 
   return throttled

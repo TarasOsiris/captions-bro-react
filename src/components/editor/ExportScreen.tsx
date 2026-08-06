@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Download, Share2, X } from 'lucide-react'
 import { useEditorStore } from '@/store/editorStore'
+import { CANVAS_ASPECT } from '@/lib/transform'
 
 interface ExportScreenProps {
   /** Abort the in-progress export (cancel X while exporting). */
@@ -22,7 +23,6 @@ const RING_GAP = 10
 const RING_LINE = 6
 const RING_INSET = RING_GAP + RING_LINE // ring sits this far outside the preview
 const PAD = 24
-const PREVIEW_ASPECT = 16 / 9
 
 /** Rounded-rect outline starting at top-center, drawn clockwise, so a
  *  stroke-dasharray trim fills the frame from 12 o'clock like the iOS ring. */
@@ -73,8 +73,8 @@ export function ExportScreen({
   // Fit a 16:9 preview (plus the ring inset) into the measured stage area.
   const availW = Math.max(0, stage.w - PAD * 2 - RING_INSET * 2)
   const availH = Math.max(0, stage.h - PAD * 2 - RING_INSET * 2)
-  const previewW = Math.max(0, Math.min(availW, availH * PREVIEW_ASPECT))
-  const previewH = previewW / PREVIEW_ASPECT
+  const previewW = Math.max(0, Math.min(availW, availH * CANVAS_ASPECT))
+  const previewH = previewW / CANVAS_ASPECT
   const ringW = previewW + RING_INSET * 2
   const ringH = previewH + RING_INSET * 2
   const ringRadius = PREVIEW_RADIUS + RING_INSET

@@ -4,39 +4,49 @@
 // `useEditorStore.getState()` — this replaces the old manual ref-mirroring.
 
 import { create } from 'zustand'
+import { subscribeWithSelector } from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
 import type { StateCreator } from 'zustand'
 import { createDocumentSlice } from './documentSlice'
+import { createHistorySlice } from './historySlice'
 import { createPlaybackSlice } from './playbackSlice'
 import { createSelectionSlice } from './selectionSlice'
 import { createExportSlice } from './exportSlice'
 import { createUiSlice } from './uiSlice'
 import type { DocumentSlice } from './documentSlice'
+import type { HistorySlice } from './historySlice'
 import type { PlaybackSlice } from './playbackSlice'
 import type { SelectionSlice } from './selectionSlice'
 import type { ExportSlice } from './exportSlice'
 import type { UiSlice } from './uiSlice'
 
 export type EditorState = DocumentSlice &
+  HistorySlice &
   PlaybackSlice &
   SelectionSlice &
   ExportSlice &
   UiSlice
 
-/** Slice-creator type bound to the immer middleware. Each slice is `(set,get)=>{…}`. */
+/** Slice-creator type bound to the middleware stack. Each slice is `(set,get)=>{…}`. */
 export type ImmerSlice<T> = StateCreator<
   EditorState,
-  [['zustand/immer', never]],
+  [['zustand/subscribeWithSelector', never], ['zustand/immer', never]],
   [],
   T
 >
 
 export const useEditorStore = create<EditorState>()(
-  immer((...a) => ({
-    ...createDocumentSlice(...a),
-    ...createPlaybackSlice(...a),
-    ...createSelectionSlice(...a),
-    ...createExportSlice(...a),
-    ...createUiSlice(...a),
-  })),
+  // subscribeWithSelector: imperative subscribers pick a slice of state and
+  // only hear when IT changes — without it, useServiceWorker had to hand-diff
+  // exportPhase on every store write (every frame of a slider drag).
+  subscribeWithSelector(
+    immer((...a) => ({
+      ...createDocumentSlice(...a),
+      ...createHistorySlice(...a),
+      ...createPlaybackSlice(...a),
+      ...createSelectionSlice(...a),
+      ...createExportSlice(...a),
+      ...createUiSlice(...a),
+    })),
+  ),
 )

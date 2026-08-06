@@ -3,25 +3,24 @@
 // re-derived on load from the IndexedDB blob (see assetStore + usePersistence).
 // Pure/SSR-safe: guarded localStorage access, no DOM.
 
+import { CURRENT_VERSION, migrateStoredProject } from './migrations'
 import type {
   CanvasSettings,
-  MediaKind,
+  MediaAsset,
   Project,
   Track,
 } from '@/lib/model/types'
 
 const KEY = 'cb-project'
-const VERSION = 1
 
-interface StoredAsset {
-  id: string
-  kind: MediaKind
-  name: string
-  sizeBytes: number
-  naturalWidth: number
-  naturalHeight: number
-  durationSec: number | null
-}
+/** The RUNTIME-ONLY fields of a MediaAsset — re-derived on load from the
+ *  IndexedDB blob, never serialized. Named here so `StoredAsset` below is
+ *  DERIVED from the live type: a new runtime-only field must be added to this
+ *  list, and a new persisted field flows through automatically. Hand-restating
+ *  the persisted subset let the two drift silently. */
+type RuntimeAssetField = 'file' | 'url' | 'thumbs'
+
+type StoredAsset = Omit<MediaAsset, RuntimeAssetField>
 
 export interface StoredProject {
   version: number
@@ -32,34 +31,41 @@ export interface StoredProject {
   assets: StoredAsset[]
 }
 
+/** Drop the runtime-only fields. Destructured rather than picked field-by-field
+ *  so `StoredAsset`'s derivation and this function stay in step — a new
+ *  persisted field is carried automatically. */
+function storeAsset({ file, url, thumbs, ...rest }: MediaAsset): StoredAsset {
+  void file
+  void url
+  void thumbs
+  return rest
+}
+
 export function serializeProject(project: Project): StoredProject {
   return {
-    version: VERSION,
+    version: CURRENT_VERSION,
     id: project.id,
     name: project.name,
     canvas: project.canvas,
     tracks: project.tracks,
-    assets: Object.values(project.assets).map((a) => ({
-      id: a.id,
-      kind: a.kind,
-      name: a.name,
-      sizeBytes: a.sizeBytes,
-      naturalWidth: a.naturalWidth,
-      naturalHeight: a.naturalHeight,
-      durationSec: a.durationSec,
-    })),
+    assets: Object.values(project.assets).map(storeAsset),
   }
 }
 
-export function saveProject(project: Project): void {
+/** Returns false when the write failed (quota exceeded / unavailable) so the
+ *  caller can tell the user their work is not being saved — losing the save
+ *  silently was the one persistence failure with real cost. */
+export function saveProject(project: Project): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(serializeProject(project)))
+    return true
   } catch {
-    // Quota exceeded / unavailable — persistence is best-effort.
+    return false
   }
 }
 
-/** Minimal defensive validation; returns null on anything unexpected. */
+/** Minimal defensive validation, then versioned migration; returns null on
+ *  anything unexpected (including a document from a future build). */
 export function loadStoredProject(): StoredProject | null {
   try {
     const raw = localStorage.getItem(KEY)
@@ -73,7 +79,7 @@ export function loadStoredProject(): StoredProject | null {
     ) {
       return null
     }
-    return parsed as StoredProject
+    return migrateStoredProject(parsed as StoredProject)
   } catch {
     return null
   }

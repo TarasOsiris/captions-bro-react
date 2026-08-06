@@ -21,14 +21,12 @@ interface MobileDockProps {
   onPickFile: () => void
   onSeek: (t: number) => void
   onAddToTimeline: (assetId: string) => void
-  onEditStart: () => void
 }
 
 export function MobileDock({
   onPickFile,
   onSeek,
   onAddToTimeline,
-  onEditStart,
 }: MobileDockProps) {
   const panel = useEditorStore((s) => s.panel)
   const setPanel = useEditorStore((s) => s.setPanel)
@@ -84,7 +82,6 @@ export function MobileDock({
         <div className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-edge" />
         {panel === 'text' ? (
           <TextPresetBin
-            onEditStart={onEditStart}
             // Insert, then go straight to styling it — the phone equivalent of
             // the desktop's always-visible inspector column.
             onPicked={() => {
@@ -92,7 +89,7 @@ export function MobileDock({
             }}
           />
         ) : panel === 'inspector' ? (
-          <InspectorBody variant="sheet" onEditStart={onEditStart} />
+          <InspectorBody variant="sheet" />
         ) : (
           <MediaBin
             onPickFile={onPickFile}

@@ -6,7 +6,11 @@ export default [
   ...tanstackConfig,
   {
     rules: {
-      'import/no-cycle': 'off',
+      // ON: the layering (components → hooks → store → lib, lib importing
+      // none of them) is otherwise discipline-only, and a cycle here shows up
+      // as an undefined import at module-init time — the hardest class of bug
+      // to read back from a stack trace.
+      'import/no-cycle': 'error',
       'import/order': 'off',
       'sort-imports': 'off',
       '@typescript-eslint/array-type': 'off',

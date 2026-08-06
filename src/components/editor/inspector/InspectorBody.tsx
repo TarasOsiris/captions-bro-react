@@ -11,15 +11,14 @@ import { useEditorStore } from '@/store/editorStore'
 import { clipById } from '@/lib/model/selectors'
 import { Button } from '@/components/ui/button'
 import { TextInspector } from './TextInspector'
+import { TimingSection } from './TimingSection'
 
 export function InspectorBody({
   variant,
-  onEditStart,
 }: {
   /** 'column' is the desktop sidebar; 'sheet' is the mobile overlay, which
    *  needs its own dismiss control and its own accordion group. */
   variant: 'column' | 'sheet'
-  onEditStart: () => void
 }) {
   const clip = useEditorStore((s) => clipById(s.project, s.selectedClipId))
   const setPanel = useEditorStore((s) => s.setPanel)
@@ -47,15 +46,15 @@ export function InspectorBody({
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4">
         {clip?.type === 'text' ? (
-          <TextInspector
-            // Remount per clip so every section's local draft state resets.
-            key={clip.id}
-            clipId={clip.id}
-            onEditStart={onEditStart}
-            // Distinct accordion groups: both instances are in the DOM at once,
-            // and a shared `name` would let one close the other's sections.
-            group={`cb-inspector-${variant}`}
-          />
+          // Remount per clip so every section's local draft state resets.
+          // Distinct accordion groups: both layout instances are in the DOM at
+          // once, and a shared `name` would let one close the other's sections.
+          <div key={clip.id} className="flex flex-col">
+            <TextInspector clipId={clip.id} group={`cb-inspector-${variant}`} />
+            {/* Clip timing is generic (see TimingSection); it renders after
+                the text-specific sections, exactly where it always sat. */}
+            <TimingSection clipId={clip.id} group={`cb-inspector-${variant}`} />
+          </div>
         ) : (
           // `h-full`, not `flex-1`: the scroll container is a block, so a flex
           // child of it has no height to grow into and the empty state would

@@ -8,7 +8,6 @@ import { useExport } from '@/hooks/useExport'
 import { useMediaImport } from '@/hooks/useMediaImport'
 import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
-import { useUndoRedo } from '@/hooks/useUndoRedo'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { useFontLoader } from '@/hooks/useFontLoader'
 import { useLaunchFiles } from '@/hooks/useLaunchFiles'
@@ -38,7 +37,8 @@ function Editor() {
   const exporting = exportPhase === 'exporting'
 
   // Orchestration lives in hooks; the store is the single source of truth.
-  const { saveUndo, undo, redo, canUndo, canRedo } = useUndoRedo()
+  // Undo lives in the store's history slice — mutation sites call
+  // beginEdit/beginEditSession through getState(), no prop-drilling.
   const { togglePlay, seek } = usePlayback(poolRef)
   const { importFile } = useMediaImport()
   const { insertAssetAtTime } = useClipInsert()
@@ -46,7 +46,6 @@ function Editor() {
   useEditorKeyboard({
     togglePlay,
     seek,
-    saveUndo,
     enabled: exportPhase === 'idle',
   })
   const { hydrated } = usePersistence()
@@ -68,20 +67,14 @@ function Editor() {
     [],
   )
 
-  // Importing appends a clip — snapshot first so it's undoable.
-  const handleImport = useCallback(
-    (file: File) => {
-      saveUndo()
-      importFile(file)
-    },
-    [saveUndo, importFile],
-  )
+  const handleImport = importFile
 
   // "Open with → Captions Bro" and the OS share sheet land here, on the same
   // importer as the picker and the drop target. `ready` is the guard the UI
   // gives every other import path for free: not before the saved project has
   // hydrated (`replaceProject` would erase the import), and not while the
-  // export screen owns the session (`importFile` calls `resetExport`).
+  // export screen owns the session (a document mutation at phase 'done'
+  // clears the finished export via the store's touchDocument seam).
   useLaunchFiles(handleImport, { ready: hydrated && exportPhase === 'idle' })
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -98,10 +91,9 @@ function Editor() {
   // copy at the playhead. Same seam as the desktop drop path (useClipInsert).
   const handleAddToTimeline = useCallback(
     (assetId: string) => {
-      saveUndo()
       insertAssetAtTime(assetId, useEditorStore.getState().currentTime)
     },
-    [saveUndo, insertAssetAtTime],
+    [insertAssetAtTime],
   )
 
   return (
@@ -127,10 +119,6 @@ function Editor() {
         supported={supported}
         unsupportedReason={unsupportedReason}
         onExport={startExport}
-        onUndo={undo}
-        onRedo={redo}
-        canUndo={canUndo}
-        canRedo={canRedo}
       />
 
       {/* Must stay a row-direction `flex` with `min-h-0`. PreviewStage sets
@@ -142,30 +130,23 @@ function Editor() {
           onPickFile={pickFile}
           onSeek={seek}
           onAddToTimeline={handleAddToTimeline}
-          onEditStart={saveUndo}
         />
         <PreviewStage
           poolRef={poolRef}
           dropDisabled={exporting}
-          onEditStart={saveUndo}
           onDropFile={handleImport}
           onPickFile={pickFile}
         />
-        <InspectorPanel onEditStart={saveUndo} />
+        <InspectorPanel />
       </div>
 
-      <Timeline
-        onTogglePlay={togglePlay}
-        onSeek={seek}
-        onEditStart={saveUndo}
-      />
+      <Timeline onTogglePlay={togglePlay} onSeek={seek} />
 
       {/* Bottom rail + media sheet; renders nothing at lg+. */}
       <MobileDock
         onPickFile={pickFile}
         onSeek={seek}
         onAddToTimeline={handleAddToTimeline}
-        onEditStart={saveUndo}
       />
 
       <input

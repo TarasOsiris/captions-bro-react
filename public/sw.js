@@ -60,6 +60,11 @@ const STATIC_PRECACHE_URLS = [
   '/site.webmanifest',
   '/app-icon-192.png?v=2',
   '/app-icon-512.png?v=2',
+  // The maskable pair is a SEPARATE set of files (see CLAUDE.md) and the
+  // manifest declares them, so a first-visit-then-offline install needs them
+  // precached too — they were missing here, which the constants test now pins.
+  '/app-icon-maskable-192.png',
+  '/app-icon-maskable-512.png',
   '/apple-touch-icon.png?v=2',
   '/favicon-32.png?v=2',
   '/favicon.ico?v=2',

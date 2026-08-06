@@ -13,22 +13,28 @@ export interface SceneItem {
   localTime: number
 }
 
+/** The compositor's liveness rule: the half-open `clipIsLiveAt` window, plus
+ *  the end-of-timeline hold — at `t === end` (pass `projectDuration`) the clip
+ *  ending there stays on screen so the canvas doesn't flash to black on the
+ *  final frame. Nothing starts at that instant, so the hold can never overlap.
+ *  Shared by `resolveScene` and the preview's selection chrome, so the chrome
+ *  can never outlive the drawn clip. */
+export function clipVisibleAt(clip: Clip, t: number, end: number): boolean {
+  return (
+    clipIsLiveAt(clip, t) || (t === end && clip.start + clip.duration === end)
+  )
+}
+
 /** Clips visible at project time `t`, in draw order. Audio tracks are excluded.
- *  Liveness is the half-open `clipIsLiveAt` window, so at a packed boundary only
- *  the later clip is live — two clips sharing an edge never both draw. The one
- *  exception is the exact timeline end (`t === projectDuration`): the clip ending
- *  there is held on screen so the canvas doesn't flash to black on the final
- *  frame. Nothing starts at that instant, so the hold can never overlap. */
+ *  Liveness is `clipVisibleAt` above, so at a packed boundary only the later
+ *  clip is live — two clips sharing an edge never both draw. */
 export function resolveScene(project: Project, t: number): SceneItem[] {
   const items: SceneItem[] = []
   const end = projectDuration(project)
   for (const track of project.tracks) {
     if (track.type === 'audio') continue
     for (const clip of track.clips) {
-      const live =
-        clipIsLiveAt(clip, t) ||
-        (t === end && clip.start + clip.duration === end)
-      if (live) {
+      if (clipVisibleAt(clip, t, end)) {
         items.push({
           clip,
           asset: assetOf(project, clip),

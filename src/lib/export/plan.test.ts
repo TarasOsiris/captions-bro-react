@@ -4,10 +4,14 @@
 // exactly the regression adding text overlays could have caused.
 
 import { describe, expect, it } from 'vitest'
-import { planExport } from './export'
-import { createProject, createTextClip, createTrack } from './model/factories'
-import { IDENTITY } from './transform'
-import type { Clip, MediaAsset, Project } from './model/types'
+import { planExport } from './plan'
+import {
+  createProject,
+  createTextClip,
+  createTrack,
+} from '@/lib/model/factories'
+import { IDENTITY } from '@/lib/transform'
+import type { Clip, MediaAsset, Project } from '@/lib/model/types'
 
 function asset(id: string, durationSec: number | null): MediaAsset {
   return {

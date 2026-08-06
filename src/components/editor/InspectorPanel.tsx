@@ -16,7 +16,7 @@ import { InspectorBody } from './inspector/InspectorBody'
 import { usePanelResize } from '@/hooks/usePanelResize'
 import { INSPECTOR_WIDTH } from '@/lib/persistence/layoutPrefs'
 
-export function InspectorPanel({ onEditStart }: { onEditStart: () => void }) {
+export function InspectorPanel() {
   const { panelProps, handleProps } = usePanelResize(INSPECTOR_WIDTH, {
     edge: 'left',
     label: 'Resize inspector',
@@ -30,7 +30,7 @@ export function InspectorPanel({ onEditStart }: { onEditStart: () => void }) {
       {/* First child: it sits on the LEFT edge, so this is also reading order. */}
       <div {...handleProps} />
 
-      <InspectorBody variant="column" onEditStart={onEditStart} />
+      <InspectorBody variant="column" />
     </aside>
   )
 }

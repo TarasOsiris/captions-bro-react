@@ -1,6 +1,7 @@
 // File → timeline clip. Classifies the file, registers a MediaAsset, and appends
 // a Clip to the end of the video track (multi-clip: importing adds to the
-// timeline, it does not replace it). Kicks off filmstrip generation.
+// timeline, it does not replace it). Kicks off filmstrip generation. Takes its
+// own undo snapshot — callers don't wrap it.
 
 import { useCallback } from 'react'
 import { toast } from 'sonner'
@@ -31,13 +32,18 @@ export function useMediaImport() {
     )
     const clip = clipFromAsset(asset, start)
 
+    st.beginEdit() // importing is undoable; snapshot before the mutations
     st.addAsset(asset)
     st.addClip(clip, track.id)
     st.selectClip(clip.id)
-    st.resetExport()
 
-    // Persist the blob for reload (best-effort).
-    putAssetBlob(asset.id, file).catch(() => {})
+    // Persist the blob for reload. Editing continues fine without it, but the
+    // clip will be MISSING after a reload — say so instead of failing silently.
+    putAssetBlob(asset.id, file).catch(() => {
+      toast.warning(
+        `"${file.name}" couldn't be saved for reload — it will be missing next time you open the editor.`,
+      )
+    })
 
     // Filmstrip thumbnails (video only; stills reuse their own frame).
     if (kind === 'video') {

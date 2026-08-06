@@ -53,14 +53,11 @@ export function useServiceWorker() {
       syncUpdateToast(useEditorStore.getState().exportPhase)
     }
 
-    // Cheap: one string compare per store write, and the store is written on
-    // every frame of a slider drag.
-    let lastPhase = useEditorStore.getState().exportPhase
-    const unsubscribe = useEditorStore.subscribe((state) => {
-      if (state.exportPhase === lastPhase) return
-      lastPhase = state.exportPhase
-      syncUpdateToast(state.exportPhase)
-    })
+    // Selector subscription: fires only when exportPhase itself changes.
+    const unsubscribe = useEditorStore.subscribe(
+      (state) => state.exportPhase,
+      syncUpdateToast,
+    )
 
     const disposeSw = registerServiceWorker(onUpdate)
 

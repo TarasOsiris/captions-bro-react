@@ -58,8 +58,9 @@ so it only has to generate text clips (see "Text overlays").
   Web Share Target hand-off), `install.ts` (`beforeinstallprompt` / iOS
   detection), `constants.ts` (the literals `public/sw.js` repeats).
 - `src/hooks/` — orchestration: `usePlayback` (virtual-timeline clock),
-  `useMediaImport` (append clip + store blob), `useExport`, `useEditorKeyboard`,
-  `useUndoRedo` (snapshot-based, over the document), `usePersistence`,
+  `useMediaImport` (append clip + store blob), `useExport`, `useEditorKeyboard`
+  (ALL shortcuts incl. Cmd+Z — undo/redo live in the store's history slice,
+  `src/store/historySlice.ts`), `usePersistence`,
   `useFontLoader` (keeps the document's faces loaded across reload/undo),
   `useTextStyle` (per-field atomic selectors + rAF-throttled writes),
   `usePanelResize` (the two draggable side columns),
@@ -209,8 +210,8 @@ return` guard at the top of `repackTrack` is the ONE place that distinction
 
 Inline editing on the canvas is a real `<textarea>` with transparent glyphs over
 the canvas-drawn text — so what is edited is literally what exports. It must stay
-a textarea, not `contentEditable`: `useEditorKeyboard` and `useUndoRedo` already
-skip their global shortcuts for TEXTAREA targets, which is what stops Space,
+a textarea, not `contentEditable`: `useEditorKeyboard` already skips its global
+shortcuts (undo included) for TEXTAREA targets, which is what stops Space,
 Delete and Cmd+Z fighting the editor.
 
 Google Fonts is the first runtime third-party fetch besides GA4 — a deliberate
@@ -360,8 +361,10 @@ Also:
 - `pointercancel` ≠ `pointerup`. Cancel means the gesture was taken away, so it
   must **never commit** (a cancelled clip drag used to run `moveClipToIndex`
   from the cancel event's `clientX`).
-- Take the undo snapshot **immediately before the mutation**, not when a drag
-  crosses its threshold — then an abandoned or cancelled drag leaves no entry.
+- Announce the edit **before mutating** — `beginEdit()` for a discrete edit,
+  `beginEditSession()`/`endEditSession()` around a drag (store history slice).
+  The snapshot itself is LAZY (taken at the first real mutation), so an
+  abandoned or cancelled drag leaves no entry by construction.
 - Guard `e.pointerType === 'mouse' && e.button !== 0`: `contextmenu` fires no
   `pointerup`, so a right-click otherwise starts a drag that sticks.
 - **Mounting a focusable element from inside a `pointerdown` handler needs
@@ -446,8 +449,12 @@ iPad + trackpad).
   `useCallback`, hence `selectClipAt` reading `currentTime` via `getState()`
   rather than closing over it); inspector controls subscribe per-FIELD through
   `useTextStyleField`; and writes are rAF-throttled. Undo takes ONE snapshot per
-  editing session — first `set` of a drag, reset on commit/blur — never per
-  frame or keystroke. `usePersistence`'s 300ms debounce already collapses a whole
+  editing session — `beginEditSession()` on the first write of a drag,
+  `endEditSession()` on commit/blur (the store's history slice; never per frame
+  or keystroke). Every document mutation flows through `documentSlice`'s
+  `mutate` wrapper, which also bumps `documentRevision` and clears a stale
+  finished export (`store/touch.ts`) — never call `resetExport` for that.
+  `usePersistence`'s 300ms debounce already collapses a whole
   drag into a single save; don't "optimise" it.
 
 ### Known mobile limitations (deliberate, not oversights)
@@ -558,10 +565,11 @@ anything arriving early is HELD and flushed when the gate opens:
   the result with `replaceProject`, which swaps the document wholesale — an
   import that lands first is silently erased. That's why `usePersistence` returns
   `{ hydrated }` at all.
-- **Not during an export.** `importFile` calls `resetExport()`, which unmounts
-  `ExportScreen` — mid-encode that hides the progress and cancel button while the
-  encode runs on invisibly; post-encode it strands the finished MP4, which on iOS
-  is reachable ONLY from that screen.
+- **Not during an export.** Importing mutates the document, and any document
+  mutation at phase `done` clears the finished export (the store's
+  `touchDocument` seam) — unmounting `ExportScreen` and stranding the finished
+  MP4, which on iOS is reachable ONLY from that screen. Mid-encode it would
+  edit the project out from under the running encode.
 
 Two more things are load-bearing:
 

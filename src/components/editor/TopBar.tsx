@@ -16,6 +16,8 @@ import {
 } from '@/components/ui/tooltip'
 import { InstallButton } from '@/components/editor/InstallButton'
 import { useTheme } from '@/hooks/useTheme'
+import { useEditorStore } from '@/store/editorStore'
+import { selectCanRedo, selectCanUndo } from '@/store/historySlice'
 
 /** Only shown if the probe somehow reported failure without a reason. */
 const UNSUPPORTED_FALLBACK = 'H.264 encode unavailable'
@@ -27,10 +29,6 @@ interface TopBarProps {
   /** Platform-aware explanation when `supported === false`. */
   unsupportedReason: string | null
   onExport: () => void
-  onUndo: () => void
-  onRedo: () => void
-  canUndo: boolean
-  canRedo: boolean
 }
 
 export function TopBar({
@@ -39,12 +37,13 @@ export function TopBar({
   supported,
   unsupportedReason,
   onExport,
-  onUndo,
-  onRedo,
-  canUndo,
-  canRedo,
 }: TopBarProps) {
   const { theme, toggle } = useTheme()
+  // Boolean selectors straight off the history slice: only THIS component
+  // re-renders when undo availability flips — the route used to re-render its
+  // whole subtree for the same flip when these were useState in useUndoRedo.
+  const canUndo = useEditorStore(selectCanUndo)
+  const canRedo = useEditorStore(selectCanRedo)
   return (
     <header className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b border-edge bg-surface pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:gap-3">
       <div className="flex items-center gap-2.5">
@@ -137,7 +136,9 @@ export function TopBar({
           <Button
             variant="ghost"
             size="icon"
-            onClick={onUndo}
+            onClick={() => {
+              useEditorStore.getState().undo()
+            }}
             disabled={!canUndo}
             aria-label="Undo"
             className="h-7 w-7 shrink-0"
@@ -153,7 +154,9 @@ export function TopBar({
           <Button
             variant="ghost"
             size="icon"
-            onClick={onRedo}
+            onClick={() => {
+              useEditorStore.getState().redo()
+            }}
             disabled={!canRedo}
             aria-label="Redo"
             className="h-7 w-7 shrink-0"

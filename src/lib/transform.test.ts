@@ -7,11 +7,16 @@ import {
   applyRotation,
   applyScale,
   containFit,
+  cropInsets,
+  cropValueForDrag,
   croppedRect,
+  hitTestRect,
   mediaRect,
   placeRect,
   rectPoint,
+  toLocalDelta,
   visibleRect,
+  wrapWidthForDrag,
 } from './transform'
 import type { RectAnchor, Transform } from './transform'
 
@@ -254,5 +259,145 @@ describe('corner resize anchors the OPPOSITE corner, never the center', () => {
     const next = repin(start, 0, 0, scaled)
     expect(next.tx).toBeCloseTo(start.tx)
     expect(next.ty).toBeCloseTo(start.ty)
+  })
+})
+
+// ── The preview's pointer-gesture math ──────────────────────────────────────
+// Lifted out of PreviewStage so the rules CLAUDE.md spends thirty lines on are
+// executable rather than prose. The gestures themselves stay in the component
+// (they need live client coords); everything below is the pure half.
+
+describe('toLocalDelta — the ONE rotation inverse', () => {
+  it('is the identity at 0°', () => {
+    expect(toLocalDelta(3, 4, 0)).toMatchObject({ lx: 3, ly: 4 })
+  })
+
+  it('maps a screen-x drag onto the local y axis at 90°', () => {
+    const { lx, ly } = toLocalDelta(10, 0, 90)
+    expect(lx).toBeCloseTo(0)
+    expect(ly).toBeCloseTo(-10)
+  })
+
+  it('round-trips through the forward rotation', () => {
+    const deg = 37
+    const { lx, ly } = toLocalDelta(5, -2, deg)
+    const rad = (deg * Math.PI) / 180
+    expect(lx * Math.cos(rad) - ly * Math.sin(rad)).toBeCloseTo(5)
+    expect(lx * Math.sin(rad) + ly * Math.cos(rad)).toBeCloseTo(-2)
+  })
+})
+
+describe('hitTestRect', () => {
+  const W = 1920
+  const H = 1080
+
+  it('accepts the center and rejects a point well outside', () => {
+    const r = mediaRect(IDENTITY, 16 / 9, W, H)
+    expect(hitTestRect(r, 0, 0)).toBe(true)
+    expect(hitTestRect(r, W, H)).toBe(false)
+  })
+
+  it('is inclusive exactly at an edge', () => {
+    const r = mediaRect(IDENTITY, 16 / 9, W, H)
+    expect(hitTestRect(r, r.w / 2, 0)).toBe(true)
+    expect(hitTestRect(r, r.w / 2 + 1, 0)).toBe(false)
+  })
+
+  it('follows the rect’s rotation, not the screen axes', () => {
+    const upright = mediaRect(IDENTITY, 4, W, H) // wide and short
+    const turned = mediaRect({ ...IDENTITY, rotationDeg: 90 }, 4, W, H)
+    // A point far along screen-x is inside the wide box…
+    const x = upright.w / 2 - 1
+    expect(hitTestRect(upright, x, 0)).toBe(true)
+    // …and outside once the box is stood on end.
+    expect(hitTestRect(turned, x, 0)).toBe(false)
+  })
+
+  it('hit-tests the VISIBLE box, so a cropped-away region is not grabbable', () => {
+    const cropped = applyCrop(IDENTITY, 'left', 0.4)
+    const full = mediaRect(cropped, 16 / 9, W, H)
+    const visible = croppedRect(full)
+    // A point inside the full rect but left of the trimmed edge.
+    const dx = -full.w / 2 + 1
+    expect(hitTestRect(full, dx, 0)).toBe(true)
+    expect(hitTestRect(visible, dx - (visible.cx - full.cx), 0)).toBe(false)
+  })
+})
+
+describe('wrapWidthForDrag', () => {
+  const bounds = { min: 0.05, max: 1 }
+
+  it('dragging the right edge out widens the box', () => {
+    const next = wrapWidthForDrag(0.5, 'right', 100, 0, 0, 1000, bounds)
+    // ×2 because the CENTER is held: one edge out by 100px adds 200px of box.
+    expect(next).toBeCloseTo(0.7)
+  })
+
+  it('dragging the left edge out widens it by the same amount', () => {
+    expect(wrapWidthForDrag(0.5, 'left', -100, 0, 0, 1000, bounds)).toBeCloseTo(
+      0.7,
+    )
+  })
+
+  it('dragging inward narrows it', () => {
+    expect(
+      wrapWidthForDrag(0.5, 'right', -100, 0, 0, 1000, bounds),
+    ).toBeCloseTo(0.3)
+  })
+
+  it('projects onto the block’s own axis when rotated', () => {
+    // At 90° the block's local +x points down the screen, so a DOWNWARD drag
+    // on the right handle widens it — exactly as a rightward drag does at 0°…
+    expect(
+      wrapWidthForDrag(0.5, 'right', 0, 100, 90, 1000, bounds),
+    ).toBeCloseTo(0.7)
+    // …and a sideways drag now does nothing, because it is purely local-y.
+    expect(
+      wrapWidthForDrag(0.5, 'right', 100, 0, 90, 1000, bounds),
+    ).toBeCloseTo(0.5)
+  })
+
+  it('clamps to the bounds', () => {
+    expect(wrapWidthForDrag(0.9, 'right', 5000, 0, 0, 1000, bounds)).toBe(1)
+    expect(wrapWidthForDrag(0.1, 'right', -5000, 0, 0, 1000, bounds)).toBe(0.05)
+  })
+})
+
+describe('cropValueForDrag', () => {
+  it('dragging the left edge inward raises the left inset', () => {
+    const value = cropValueForDrag(IDENTITY, 'left', 100, 0, 0, 1000, 500)
+    expect(value).toBeCloseTo(0.1)
+  })
+
+  it('dragging the right edge inward raises the right inset', () => {
+    const value = cropValueForDrag(IDENTITY, 'right', -100, 0, 0, 1000, 500)
+    expect(value).toBeCloseTo(0.1)
+  })
+
+  it('vertical edges scale against the media HEIGHT', () => {
+    expect(cropValueForDrag(IDENTITY, 'top', 0, 50, 0, 1000, 500)).toBeCloseTo(
+      0.1,
+    )
+    expect(
+      cropValueForDrag(IDENTITY, 'bottom', 0, -50, 0, 1000, 500),
+    ).toBeCloseTo(0.1)
+  })
+
+  it('accumulates from the inset the gesture started with', () => {
+    const start = applyCrop(IDENTITY, 'left', 0.2)
+    const value = cropValueForDrag(start, 'left', 100, 0, 0, 1000, 500)
+    expect(value).toBeCloseTo(0.3)
+  })
+
+  it('projects onto the media’s own axes when rotated', () => {
+    // At 90° the media's local +x is screen +y.
+    const value = cropValueForDrag(IDENTITY, 'left', 0, 100, 90, 1000, 500)
+    expect(value).toBeCloseTo(0.1)
+  })
+
+  it('feeds applyCrop, which is what clamps it', () => {
+    const raw = cropValueForDrag(IDENTITY, 'left', 100000, 0, 0, 1000, 500)
+    expect(raw).toBeGreaterThan(1)
+    expect(cropInsets(applyCrop(IDENTITY, 'left', raw)).left).toBeLessThan(1)
   })
 })

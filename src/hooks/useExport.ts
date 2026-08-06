@@ -112,13 +112,11 @@ export function useExport() {
         const url = URL.createObjectURL(result.blob)
         downloadUrlRef.current = url
         resultBlobRef.current = result.blob
-        // The finished video is silent if audio existed but couldn't be encoded.
-        const silent =
-          result.silent === true ||
-          result.discardedTracks.some((t) => t.type === 'audio')
+        // `silent` is computed by every export path now (it used to be set by
+        // the timeline path alone, so this had to guess from discardedTracks).
         useEditorStore
           .getState()
-          .completeExport(url, result.suggestedFileName, silent)
+          .completeExport(url, result.suggestedFileName, result.silent)
         // Safety net: save the render immediately so a long export is never lost
         // if the user dismisses the screen without pressing Download.
         //

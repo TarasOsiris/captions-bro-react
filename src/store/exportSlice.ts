@@ -10,7 +10,7 @@ export interface ExportSlice {
   /** H.264 encode capability (null until probed). */
   supported: boolean | null
   /** Why export is unavailable — user-facing, platform-aware (see
-   *  exportCapability in lib/export.ts). Null when supported or unprobed. */
+   *  exportCapability in lib/export/). Null when supported or unprobed. */
   unsupportedReason: string | null
   exportPhase: ExportPhase
   exportProgress: number

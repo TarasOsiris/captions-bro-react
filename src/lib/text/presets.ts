@@ -186,7 +186,7 @@ export const TEXT_PRESETS: TextPreset[] = [
 ]
 
 /** Merge a preset's look onto an existing style, keeping size and placement. */
-export function applyPreset(style: TextStyle, preset: TextPreset): TextStyle {
+function applyPreset(style: TextStyle, preset: TextPreset): TextStyle {
   return { ...style, ...preset.style }
 }
 

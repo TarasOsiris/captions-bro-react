@@ -2,28 +2,32 @@ import { useEffect, useRef, useState } from 'react'
 import { RotateCw, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useEditorStore } from '@/store/editorStore'
-import { resolveScene } from '@/lib/model/scene'
-import { allClips, assetOf, clipById } from '@/lib/model/selectors'
+import { clipVisibleAt, resolveScene } from '@/lib/model/scene'
+import { clipById, projectDuration } from '@/lib/model/selectors'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
-import { drawScene } from '@/lib/render/compositor'
-import { clipNaturalSize, textSourceForClip } from '@/lib/render/textSource'
+import { clipNaturalSize } from '@/lib/render/textSource'
 import { CanvasTextEditor } from '@/components/editor/CanvasTextEditor'
+import { MediaSources } from '@/components/editor/MediaSources'
+import { useElementSize } from '@/hooks/useElementSize'
+import { usePreviewCompositor } from '@/hooks/usePreviewCompositor'
 import { withTextDefaults } from '@/lib/model/text'
 import {
+  CANVAS_ASPECT,
   anchorRectAt,
   applyCrop,
   applyMove,
   applyRotation,
   applyScale,
-  cropInsets,
+  cropValueForDrag,
+  hitTestRect,
   placeRect,
   rectPoint,
   visibleRect,
+  wrapWidthForDrag,
 } from '@/lib/transform'
 import type { CropInsets, RectAnchor } from '@/lib/transform'
-import type { DrawItem, RenderSource } from '@/lib/render/compositor'
 import type { MediaPool } from '@/lib/render/mediaPool'
-import type { Clip, MediaAsset, TextStyle, Transform } from '@/lib/model/types'
+import type { Clip, TextStyle, Transform } from '@/lib/model/types'
 import { clamp as clampNumber } from '@/lib/math'
 
 /** Font-size bounds as a fraction of canvas height (≈22px…432px at 1080p). */
@@ -36,8 +40,6 @@ const MAX_BOX_WIDTH = 1
 interface PreviewStageProps {
   poolRef: React.RefObject<MediaPool>
   dropDisabled: boolean
-  /** Fired once at the start of a move/resize/rotate gesture (for undo snapshots). */
-  onEditStart: () => void
   onDropFile: (file: File) => void
   onPickFile: () => void
 }
@@ -153,8 +155,8 @@ type Gesture =
       /** Full media rect dimensions (px) at gesture start, to scale the drag. */
       mediaW: number
       mediaH: number
-      /** Media rotation (rad) — the drag is projected onto its local axes. */
-      rotationRad: number
+      /** Media rotation (deg) — the drag is projected onto its local axes. */
+      rotationDeg: number
     })
   // Text-only. Projects the drag onto the block's local x axis, like 'crop'.
   | (GestureBase & {
@@ -162,7 +164,7 @@ type Gesture =
       side: 'left' | 'right'
       startX: number
       startY: number
-      rotationRad: number
+      rotationDeg: number
       frameW: number
       startBoxWidth: number
     })
@@ -170,7 +172,6 @@ type Gesture =
 export function PreviewStage({
   poolRef,
   dropDisabled,
-  onEditStart,
   onDropFile,
   onPickFile,
 }: PreviewStageProps) {
@@ -179,6 +180,15 @@ export function PreviewStage({
   const playing = useEditorStore((s) => s.playing)
   const selectClip = useEditorStore((s) => s.selectClip)
   const setClipTransform = useEditorStore((s) => s.setClipTransform)
+  // Whether the selected clip is composited at the playhead — the compositor's
+  // own liveness rule, so the chrome can never sit over a frame the clip isn't
+  // drawn on (seek away via the knob or arrow keys and the box must go). A
+  // boolean selector, so seeks only re-render when liveness actually flips.
+  const selectedLive = useEditorStore((s) => {
+    const clip = clipById(s.project, s.selectedClipId)
+    if (!clip) return false
+    return clipVisibleAt(clip, s.currentTime, projectDuration(s.project))
+  })
 
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
@@ -186,7 +196,9 @@ export function PreviewStage({
   const frameRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gestureRef = useRef<Gesture | null>(null)
-  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 })
+  // Feeds the DOM chrome only; the gestures below read the frame's live rect,
+  // which can't be one render stale mid-drag.
+  const frameSize = useElementSize(frameRef)
   const [editingClipId, setEditingClipId] = useState<string | null>(null)
   // Double-tap detection, done by hand rather than via `e.detail`, which is
   // unreliable on touch. Works identically for mouse and finger.
@@ -210,125 +222,17 @@ export function PreviewStage({
   )
   const isText = selectedClip?.type === 'text'
 
-  // Distinct sources to keep mounted: a <video> per video clip, a shared <img>
-  // per referenced image asset.
-  const videoClips = allClips(project).filter(
-    (c) => c.type === 'video' && c.assetId != null,
-  )
-  const imageAssets = (() => {
-    const seen = new Set<string>()
-    const out: { id: string; url: string }[] = []
-    for (const clip of allClips(project)) {
-      if (clip.type !== 'image' || clip.assetId == null) continue
-      if (seen.has(clip.assetId)) continue
-      const asset = assetOf(project, clip)
-      if (asset) {
-        seen.add(asset.id)
-        out.push({ id: asset.id, url: asset.url })
-      }
-    }
-    return out
-  })()
-
+  // Seeking away from the clip being edited ends the editing session (the
+  // textarea would otherwise float over a frame its clip isn't drawn on —
+  // blur alone doesn't cover seeks whose pointerdown prevents default).
   useEffect(() => {
-    const el = frameRef.current
-    if (!el) return
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[0].contentRect
-      setFrameSize({ w: r.width, h: r.height })
-    })
-    ro.observe(el)
-    return () => {
-      ro.disconnect()
-    }
-  }, [])
+    if (editingClipId != null && !selectedLive) setEditingClipId(null)
+  }, [editingClipId, selectedLive])
 
-  // The preview render loop — the SAME drawScene the export uses, over the pool.
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.imageSmoothingQuality = 'high'
-
-    const sourceFor = (
-      clip: Clip,
-      cw: number,
-      ch: number,
-    ): RenderSource | null => {
-      // Text is procedural — no pool entry, never "not ready", and produced by
-      // the SAME factory both export paths use, so it cannot drift.
-      if (clip.type === 'text') return textSourceForClip(clip, cw, ch)
-      if (clip.type === 'video') {
-        const v = poolRef.current.videos.get(clip.id)
-        if (!v || v.readyState < 2 || v.videoWidth === 0) return null
-        return {
-          aspect: v.videoWidth / v.videoHeight,
-          paint: (c, dx, dy, dw, dh) => {
-            c.drawImage(v, dx, dy, dw, dh)
-          },
-        }
-      }
-      if (clip.type === 'image' && clip.assetId != null) {
-        const img = poolRef.current.images.get(clip.assetId)
-        if (!img || !img.complete || img.naturalWidth === 0) return null
-        return {
-          aspect: img.naturalWidth / img.naturalHeight,
-          paint: (c, dx, dy, dw, dh) => {
-            c.drawImage(img, dx, dy, dw, dh)
-          },
-        }
-      }
-      return null
-    }
-
-    let raf = 0
-    const render = () => {
-      const { project: proj, currentTime } = useEditorStore.getState()
-      const scene = resolveScene(proj, currentTime)
-      // A live video mid-seek has no decodable frame (readyState drops below
-      // HAVE_CURRENT_DATA until the seek lands), so drawing the scene now would
-      // paint background where the clip is — a black flash on every scrub step.
-      // Hold the previous composite instead and try again next frame. Seeking
-      // alone isn't enough to skip: with a frame still available the element
-      // paints its old frame, which is exactly the hold we want. `error` guards
-      // a seek that can never land from freezing the preview forever.
-      const midSeek = scene.some(({ clip }) => {
-        if (clip.type !== 'video') return false
-        const v = poolRef.current.videos.get(clip.id)
-        return v != null && v.seeking && v.readyState < 2 && v.error == null
-      })
-      if (midSeek) {
-        raf = requestAnimationFrame(render)
-        return
-      }
-      // Size the backing store to the DISPLAYED pixels (× DPR), not the export
-      // resolution — so the preview is crisp at native density on any screen
-      // instead of being up/down-scaled from a fixed 1920×1080. Geometry is
-      // resolution-independent (mediaRect works off fractions), so the image is
-      // identical; only the pixel density differs from the export path.
-      const dpr = window.devicePixelRatio || 1
-      const cw = Math.max(1, Math.round(canvas.clientWidth * dpr))
-      const ch = Math.max(1, Math.round(canvas.clientHeight * dpr))
-      if (canvas.width !== cw) canvas.width = cw
-      if (canvas.height !== ch) canvas.height = ch
-      const renderCanvas = {
-        width: cw,
-        height: ch,
-        background: proj.canvas.background,
-      }
-      const items: DrawItem[] = scene.map((item) => ({
-        transform: item.clip.transform,
-        source: sourceFor(item.clip, cw, ch),
-      }))
-      drawScene(ctx, renderCanvas, items)
-      raf = requestAnimationFrame(render)
-    }
-    raf = requestAnimationFrame(render)
-    return () => {
-      cancelAnimationFrame(raf)
-    }
-  }, [poolRef])
+  // The preview render loop — the SAME drawScene the export uses, over the
+  // pool. Mounts once and reads the document via getState(), so it neither
+  // depends on nor triggers a React render.
+  usePreviewCompositor(canvasRef, poolRef)
 
   const onDragEnter = (e: React.DragEvent) => {
     e.preventDefault()
@@ -347,40 +251,6 @@ export function PreviewStage({
     if (dropDisabled) return
     const files = e.dataTransfer.files
     if (files.length > 0) onDropFile(files[0])
-  }
-
-  // Video metadata → learn asset dimensions/duration; set clip duration once.
-  const onVideoMeta = (
-    clip: Clip,
-    e: React.SyntheticEvent<HTMLVideoElement>,
-  ) => {
-    if (clip.assetId == null) return
-    const v = e.currentTarget
-    const st = useEditorStore.getState()
-    const asset = assetOf(st.project, clip)
-    if (!asset) return
-    const patch: Partial<MediaAsset> = {}
-    if (v.videoWidth > 0 && v.videoHeight > 0) {
-      patch.naturalWidth = v.videoWidth
-      patch.naturalHeight = v.videoHeight
-    }
-    const learnDuration =
-      asset.durationSec == null && Number.isFinite(v.duration)
-    if (Number.isFinite(v.duration)) patch.durationSec = v.duration
-    st.updateAsset(asset.id, patch)
-    if (learnDuration) st.updateClip(clip.id, { duration: v.duration })
-  }
-
-  const onImageMeta = (
-    assetId: string,
-    e: React.SyntheticEvent<HTMLImageElement>,
-  ) => {
-    const img = e.currentTarget
-    if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return
-    useEditorStore.getState().updateAsset(assetId, {
-      naturalWidth: img.naturalWidth,
-      naturalHeight: img.naturalHeight,
-    })
   }
 
   // Selection-chrome geometry for the selected clip (paused only) — the VISIBLE
@@ -424,12 +294,7 @@ export function PreviewStage({
     const fr = el.getBoundingClientRect()
     // Hit-test the visible (cropped) box, so trimmed-away regions aren't grabbable.
     const r = visibleRect(transform, size.w, size.h, fr.width, fr.height)
-    const dx = clientX - fr.left - r.cx
-    const dy = clientY - fr.top - r.cy
-    const rad = (-r.rotationDeg * Math.PI) / 180
-    const rx = dx * Math.cos(rad) - dy * Math.sin(rad)
-    const ry = dx * Math.sin(rad) + dy * Math.cos(rad)
-    return Math.abs(rx) <= r.w / 2 && Math.abs(ry) <= r.h / 2
+    return hitTestRect(r, clientX - fr.left - r.cx, clientY - fr.top - r.cy)
   }
 
   // A captured pointer is treated as being over the capture target (the frame),
@@ -482,7 +347,7 @@ export function PreviewStage({
     const anchor = { fx, fy, ...p }
     const startDist = anchorDist(e, fr, anchor)
     if (startDist <= 0) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     gestureRef.current = {
       kind: 'corner',
       pointerId: e.pointerId,
@@ -510,7 +375,7 @@ export function PreviewStage({
     if (!el || !selectedClip || !selectedSize) return
     const fr = el.getBoundingClientRect()
     if (fr.width <= 0) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     gestureRef.current = {
       kind: 'wrap',
       pointerId: e.pointerId,
@@ -518,7 +383,7 @@ export function PreviewStage({
       side,
       startX: e.clientX,
       startY: e.clientY,
-      rotationRad: (selectedClip.transform.rotationDeg * Math.PI) / 180,
+      rotationDeg: selectedClip.transform.rotationDeg,
       frameW: fr.width,
       startBoxWidth: withTextDefaults(selectedClip.textStyle).boxWidth,
       start: selectedClip.transform,
@@ -544,7 +409,7 @@ export function PreviewStage({
       fr.height,
     )
     if (r.w <= 0 || r.h <= 0) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     gestureRef.current = {
       kind: 'crop',
       pointerId: e.pointerId,
@@ -554,7 +419,7 @@ export function PreviewStage({
       startY: e.clientY,
       mediaW: r.w,
       mediaH: r.h,
-      rotationRad: (r.rotationDeg * Math.PI) / 180,
+      rotationDeg: r.rotationDeg,
       start: selectedClip.transform,
     }
     startGesture(el, e, cursor)
@@ -567,7 +432,7 @@ export function PreviewStage({
     if (!el || !selectedClip || !selectedSize) return
     const center = centerClient(selectedClip.transform, selectedSize)
     if (!center) return
-    onEditStart()
+    useEditorStore.getState().beginEdit()
     gestureRef.current = {
       kind: 'rotate',
       pointerId: e.pointerId,
@@ -627,7 +492,7 @@ export function PreviewStage({
         }
 
         selectClip(clip.id)
-        onEditStart()
+        useEditorStore.getState().beginEdit()
         gestureRef.current = {
           kind: 'move',
           pointerId: e.pointerId,
@@ -700,35 +565,27 @@ export function PreviewStage({
         ),
       })
     } else if (g.kind === 'wrap') {
-      // Project the drag onto the block's local x axis, as `crop` does.
-      const dx = e.clientX - g.startX
-      const dy = e.clientY - g.startY
-      const lx = dx * Math.cos(g.rotationRad) + dy * Math.sin(g.rotationRad)
-      // ×2 because the transform holds the CENTER fixed: dragging one edge out
-      // by `lx` widens the box by `lx` on both sides.
-      const delta = ((g.side === 'right' ? 1 : -1) * (2 * lx)) / g.frameW
       patchTextStyle(g.clipId, {
-        boxWidth: clampNumber(
-          g.startBoxWidth + delta,
-          MIN_BOX_WIDTH,
-          MAX_BOX_WIDTH,
+        boxWidth: wrapWidthForDrag(
+          g.startBoxWidth,
+          g.side,
+          e.clientX - g.startX,
+          e.clientY - g.startY,
+          g.rotationDeg,
+          g.frameW,
+          { min: MIN_BOX_WIDTH, max: MAX_BOX_WIDTH },
         ),
       })
     } else if (g.kind === 'crop') {
-      // Project the pointer drag onto the media's own (rotated) axes, then turn
-      // the on-edge component into an inset fraction of the full media dimension.
-      const dx = e.clientX - g.startX
-      const dy = e.clientY - g.startY
-      const cos = Math.cos(g.rotationRad)
-      const sin = Math.sin(g.rotationRad)
-      const lx = dx * cos + dy * sin
-      const ly = -dx * sin + dy * cos
-      const c = cropInsets(g.start)
-      let value: number
-      if (g.edge === 'left') value = c.left + lx / g.mediaW
-      else if (g.edge === 'right') value = c.right - lx / g.mediaW
-      else if (g.edge === 'top') value = c.top + ly / g.mediaH
-      else value = c.bottom - ly / g.mediaH
+      const value = cropValueForDrag(
+        g.start,
+        g.edge,
+        e.clientX - g.startX,
+        e.clientY - g.startY,
+        g.rotationDeg,
+        g.mediaW,
+        g.mediaH,
+      )
       setClipTransform(g.clipId, applyCrop(g.start, g.edge, value))
     } else {
       const angle = Math.atan2(e.clientY - g.centerY, e.clientX - g.centerX)
@@ -752,9 +609,14 @@ export function PreviewStage({
     releaseCapture(el, e.pointerId)
   }
 
-  // Handles are hidden while editing text, so they can't sit under the caret.
+  // Handles are hidden while editing text, so they can't sit under the caret —
+  // and while the clip isn't live at the playhead, so they can't sit over a
+  // frame it isn't drawn on.
   const showChrome =
-    selectedClip != null && !playing && editingClipId !== selectedClip.id
+    selectedClip != null &&
+    selectedLive &&
+    !playing &&
+    editingClipId !== selectedClip.id
 
   return (
     <section
@@ -775,54 +637,28 @@ export function PreviewStage({
         onPointerMove={onFramePointerMove}
         onPointerUp={endGesture}
         onPointerCancel={endGesture}
-        // Always the largest 16:9 box that fits the stage (contain), sized from
-        // the container's own dimensions so BOTH axes stay locked to 16:9. A
-        // single-axis fit (h-full + max-w-full) lets max-width clamp the width
-        // while height stays full, silently squishing the frame — and with it
-        // everything drawn onto the canvas. Never regress this to a one-axis fit.
-        className="relative h-[min(100cqh,56.25cqw)] w-[min(100cqw,177.778cqh)] touch-none"
+        // Always the largest CANVAS_ASPECT box that fits the stage (contain),
+        // sized from the container's own dimensions so BOTH axes stay locked to
+        // the ratio. A single-axis fit (h-full + max-w-full) lets max-width
+        // clamp the width while height stays full, silently squishing the frame
+        // — and with it everything drawn onto the canvas. Never regress this to
+        // a one-axis fit.
+        //
+        // An inline style, not a class: Tailwind can't interpolate a TS
+        // constant into an arbitrary value, and a hardcoded 56.25/177.778 pair
+        // is exactly the kind of duplicated magic number that drifts from the
+        // constant it mirrors (see the `19rem` note in CLAUDE.md).
+        style={{
+          height: `min(100cqh, ${(100 / CANVAS_ASPECT).toString()}cqw)`,
+          width: `min(100cqw, ${(100 * CANVAS_ASPECT).toString()}cqh)`,
+        }}
+        className="relative touch-none"
       >
         <div className="absolute inset-0 overflow-hidden rounded-[3px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,1),0_40px_120px_-30px_rgba(0,0,0,0.9)]">
-          {/* Hidden decode/audio sources (behind the opaque canvas). Videos stay
-              full-size + opacity-0 so browsers keep decoding their frames. */}
-          {videoClips.map((clip) => {
-            const asset = assetOf(project, clip)
-            if (!asset) return null
-            return (
-              <video
-                key={clip.id}
-                ref={(el) => {
-                  if (el) poolRef.current.videos.set(clip.id, el)
-                  else poolRef.current.videos.delete(clip.id)
-                }}
-                src={asset.url}
-                playsInline
-                // Without this iOS may fetch metadata only; readyState stays < 2,
-                // sourceFor() returns null and the canvas draws nothing at all.
-                preload="auto"
-                onLoadedMetadata={(e) => {
-                  onVideoMeta(clip, e)
-                }}
-                className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
-              />
-            )
-          })}
-          {imageAssets.map((a) => (
-            <img
-              key={a.id}
-              ref={(el) => {
-                if (el) poolRef.current.images.set(a.id, el)
-                else poolRef.current.images.delete(a.id)
-              }}
-              src={a.url}
-              alt=""
-              draggable={false}
-              onLoad={(e) => {
-                onImageMeta(a.id, e)
-              }}
-              className="hidden"
-            />
-          ))}
+          {/* Hidden decode/audio sources, behind the opaque canvas. Memoized
+              (see MediaSources) so a transform gesture — which re-renders this
+              component at pointer rate — can't churn the media elements. */}
+          <MediaSources project={project} poolRef={poolRef} />
 
           {/* The composited output — the same drawScene as the export. */}
           <canvas
@@ -918,12 +754,11 @@ export function PreviewStage({
         {/* Inline text editing. Positioned by the SAME rect as the chrome, with
             transparent glyphs over the canvas-drawn text — so the thing being
             edited is the thing that exports. */}
-        {editingClipId && rect && !playing && (
+        {editingClipId && rect && !playing && selectedLive && (
           <CanvasTextEditor
             clipId={editingClipId}
             rect={rect}
             frameH={frameSize.h}
-            onEditStart={onEditStart}
             onClose={() => {
               setEditingClipId(null)
             }}

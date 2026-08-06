@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
  * An auto-growing textarea.
  *
  * A real `<textarea>` rather than a contentEditable div, deliberately: both
- * `useEditorKeyboard` and `useUndoRedo` already skip their global shortcuts when
+ * `useEditorKeyboard` already skips its global shortcuts (undo included) when
  * the event target is a TEXTAREA, so Space, Delete and Cmd+Z stop fighting the
  * editor for free — and emoji, IME composition and the mobile keyboard all work
  * with no extra code.

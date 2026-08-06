@@ -340,10 +340,9 @@ export function MediaBin({
  *  the body takes the difference through `flex-1`. Both bins lay out on an
  *  `auto-fill` grid, so the column count follows the new width by itself — no
  *  breakpoint, no JS. */
-export function MediaPanel(props: MediaBinProps & { onEditStart: () => void }) {
+export function MediaPanel(binProps: MediaBinProps) {
   const tab = useEditorStore((s) => s.panel) ?? 'media'
   const setPanel = useEditorStore((s) => s.setPanel)
-  const { onEditStart, ...binProps } = props
   const { panelProps, handleProps } = usePanelResize(MEDIA_WIDTH, {
     edge: 'right',
     label: 'Resize media panel',
@@ -374,11 +373,7 @@ export function MediaPanel(props: MediaBinProps & { onEditStart: () => void }) {
         role="tabpanel"
         className="flex min-w-0 flex-1 flex-col"
       >
-        {tab === 'text' ? (
-          <TextPresetBin onEditStart={onEditStart} />
-        ) : (
-          <MediaBin {...binProps} />
-        )}
+        {tab === 'text' ? <TextPresetBin /> : <MediaBin {...binProps} />}
       </div>
 
       {/* Last child: it sits on the RIGHT edge, so tab order matches the eye. */}

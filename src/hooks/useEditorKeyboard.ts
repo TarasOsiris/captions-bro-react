@@ -1,6 +1,11 @@
-// Editor transport/selection keyboard shortcuts. (Undo/redo lives in useUndoRedo.)
+// Editor keyboard shortcuts, ONE window listener:
 // Space = play/pause · ←/→ = nudge 1s · Home/End = jump · Escape = deselect ·
-// Delete/Backspace = remove the selected clip (undoable via `saveUndo`).
+// Delete/Backspace = remove the selected clip · Cmd/Ctrl+Z (+Shift) = undo/redo.
+//
+// Undo/redo lives HERE (not a second listener) so it shares the textarea guard
+// and the `enabled` gate: while ExportScreen covers the editor, Cmd+Z is inert
+// — the old separate useUndoRedo listener could mutate the document BEHIND the
+// done-screen and leave a stale download on show.
 
 import { useEffect } from 'react'
 import { useEditorStore } from '@/store/editorStore'
@@ -14,12 +19,10 @@ export const NUDGE_SEC = 1
 export function useEditorKeyboard({
   togglePlay,
   seek,
-  saveUndo,
   enabled = true,
 }: {
   togglePlay: () => void
   seek: (t: number) => void
-  saveUndo: () => void
   /** When false, shortcuts are inert (e.g. the export overlay is covering the editor). */
   enabled?: boolean
 }) {
@@ -27,6 +30,9 @@ export function useEditorKeyboard({
     if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       const target = e.target
+      // `isContentEditable` too: a rich-text surface owns Cmd+Z for its own
+      // text history, and stealing it would undo a whole document edit instead
+      // of the last few characters.
       if (
         target instanceof HTMLElement &&
         (target.tagName === 'INPUT' ||
@@ -36,11 +42,19 @@ export function useEditorKeyboard({
         return
       }
       const st = useEditorStore.getState()
+      // Before the hasClips gate: undo must still work when the last clip was
+      // just deleted (the project is empty precisely BECAUSE of the edit).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) st.redo()
+        else st.undo()
+        return
+      }
       const hasClips = projectDuration(st.project) > 0
       if (e.code === 'Delete' || e.code === 'Backspace') {
         if (st.selectedClipId) {
           e.preventDefault()
-          saveUndo()
+          st.beginEdit()
           st.removeClip(st.selectedClipId)
           st.selectClip(null)
         }
@@ -70,5 +84,5 @@ export function useEditorKeyboard({
     return () => {
       window.removeEventListener('keydown', onKey)
     }
-  }, [togglePlay, seek, saveUndo, enabled])
+  }, [togglePlay, seek, enabled])
 }

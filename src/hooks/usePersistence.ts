@@ -1,71 +1,20 @@
 // Auto-save/restore the current document. The JSON goes to localStorage
-// (debounced); media blobs go to IndexedDB. On mount we hydrate the saved project
-// — re-creating each asset's File + object URL from its stored blob and dropping
-// clips whose media is gone — then regenerate video filmstrips (not persisted).
+// (debounced); media blobs go to IndexedDB. On mount we hydrate the saved
+// project via lib/persistence/hydrate — re-creating each asset's File + object
+// URL from its stored blob and dropping clips whose media is gone — then
+// regenerate video filmstrips (not persisted). Loss is never silent: dropped
+// clips, an unrecoverable document and a failing auto-save all get a toast.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { useEditorStore } from '@/store/editorStore'
-import { getAssetBlob } from '@/lib/persistence/assetStore'
-import { loadStoredProject, saveProject } from '@/lib/persistence/projectStore'
+import { hydrateProject } from '@/lib/persistence/hydrate'
+import {
+  clearStoredProject,
+  loadStoredProject,
+  saveProject,
+} from '@/lib/persistence/projectStore'
 import { generateFilmstrip } from '@/lib/thumbs'
-import { withTextDefaults } from '@/lib/model/text'
-import { normalizeLaneOverlaps } from '@/lib/model/lanes'
-import type { MediaAsset, Project } from '@/lib/model/types'
-import type { StoredProject } from '@/lib/persistence/projectStore'
-
-async function hydrate(stored: StoredProject): Promise<Project | null> {
-  const assets: Record<string, MediaAsset> = {}
-  const missing = new Set<string>()
-  for (const sa of stored.assets) {
-    let blob: Blob | undefined
-    try {
-      blob = await getAssetBlob(sa.id)
-    } catch {
-      blob = undefined
-    }
-    if (!blob) {
-      missing.add(sa.id)
-      continue
-    }
-    const file = new File([blob], sa.name, { type: blob.type })
-    const url = URL.createObjectURL(file)
-    assets[sa.id] = {
-      id: sa.id,
-      kind: sa.kind,
-      name: sa.name,
-      sizeBytes: sa.sizeBytes,
-      file,
-      url,
-      naturalWidth: sa.naturalWidth,
-      naturalHeight: sa.naturalHeight,
-      durationSec: sa.durationSec,
-      thumbs: sa.kind === 'image' ? [url] : [],
-    }
-  }
-  // Drop clips whose media couldn't be restored (asset-less clips like text are
-  // always kept), and normalize every text style so a document written by an
-  // older build can never hand `undefined` to the layout engine.
-  const tracks = stored.tracks.map((t) => ({
-    ...t,
-    clips: t.clips
-      .filter((c) => c.assetId == null || !missing.has(c.assetId))
-      .map((c) =>
-        c.type === 'text'
-          ? { ...c, textStyle: withTextDefaults(c.textStyle) }
-          : c,
-      ),
-  }))
-  if (stored.assets.length > 0 && Object.keys(assets).length === 0) return null
-  // Documents written before lanes stopped overlapping may stack clips on one
-  // overlay track; spread those across lanes once, on the way in.
-  return normalizeLaneOverlaps({
-    id: stored.id,
-    name: stored.name,
-    canvas: stored.canvas,
-    tracks,
-    assets,
-  })
-}
 
 /**
  * Returns `{ hydrated }` — false until the restore attempt has settled.
@@ -86,11 +35,18 @@ export function usePersistence(): { hydrated: boolean } {
       return
     }
     let alive = true
-    hydrate(stored).then(
-      (project) => {
+    hydrateProject(stored).then(
+      ({ project, droppedClips }) => {
         if (!alive) return
         if (project) {
           useEditorStore.getState().replaceProject(project)
+          if (droppedClips > 0) {
+            toast.warning(
+              droppedClips === 1
+                ? 'One clip was removed — its media could not be restored.'
+                : `${droppedClips.toString()} clips were removed — their media could not be restored.`,
+            )
+          }
           for (const asset of Object.values(project.assets)) {
             if (asset.kind !== 'video') continue
             const { id, url } = asset
@@ -105,6 +61,14 @@ export function usePersistence(): { hydrated: boolean } {
               () => {},
             )
           }
+        } else {
+          // The document had media and none of it survived. Clear it — an
+          // unloadable document would otherwise be retried (and silently
+          // fail) on every future visit.
+          clearStoredProject()
+          toast.error(
+            "Couldn't restore your last project — its media is no longer available.",
+          )
         }
         setReady(true)
       },
@@ -118,12 +82,21 @@ export function usePersistence(): { hydrated: boolean } {
   }, [])
 
   // Debounced save on document change — but never before the restore attempt, or
-  // the fresh empty project would clobber the saved one.
+  // the fresh empty project would clobber the saved one. A failing save warns
+  // ONCE (per failure streak, not per keystroke) — storage-full is exactly the
+  // state where "your work is not being saved" must reach the user.
   const project = useEditorStore((s) => s.project)
+  const saveFailedRef = useRef(false)
   useEffect(() => {
     if (!ready) return
     const t = setTimeout(() => {
-      saveProject(project)
+      const ok = saveProject(project)
+      if (!ok && !saveFailedRef.current) {
+        toast.warning(
+          'Your project could not be auto-saved — storage is full or unavailable.',
+        )
+      }
+      saveFailedRef.current = !ok
     }, 300)
     return () => {
       clearTimeout(t)

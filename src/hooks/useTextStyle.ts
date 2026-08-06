@@ -9,11 +9,12 @@
 //    slider re-renders the letter-spacing row and nothing else.
 //
 // 2. UNDO SPAM. The undo stack holds 50 whole-project snapshots. One per slider
-//    frame would bury every real edit within half a second. So a snapshot is
-//    taken on the FIRST write of a drag and not again until it commits — the
-//    same `snapshotted` idiom the Timeline's trim gesture already uses.
+//    frame would bury every real edit within half a second. The store's history
+//    slice owns this now: `beginEditSession()` on every live write (free while
+//    the session is open) and `endEditSession()` on commit — one session, one
+//    undo entry.
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useEditorStore } from '@/store/editorStore'
 import { clipById } from '@/lib/model/selectors'
 import { withTextDefaults } from '@/lib/model/text'
@@ -21,25 +22,16 @@ import { rafThrottle } from '@/lib/raf'
 import { ensureFont } from '@/lib/text/fontLoader'
 import type { TextStyle } from '@/lib/model/text'
 
-/** The resolved style of a text clip, or null if it isn't one. */
-export function useTextStyle(clipId: string | null): TextStyle | null {
-  return useEditorStore((s) => {
-    const clip = clipById(s.project, clipId)
-    if (!clip || clip.type !== 'text') return null
-    return clip.textStyle ?? null
-  })
-}
-
 /** One field of a clip's text style, as a live-editable value. */
 export function useTextStyleField<TKey extends keyof TextStyle>(
   clipId: string,
   key: TKey,
-  onEditStart: () => void,
 ): {
   value: TextStyle[TKey]
   /** Live write — throttled to one store update per frame. */
   set: (value: TextStyle[TKey]) => void
-  /** End the editing session, so the next `set` snapshots again. */
+  /** End the editing session (optionally writing a final value first), so the
+   *  next `set` starts a fresh undo entry. */
   commit: (value?: TextStyle[TKey]) => void
 } {
   // Atomic selector: this component only re-renders when THIS field changes.
@@ -47,8 +39,6 @@ export function useTextStyleField<TKey extends keyof TextStyle>(
     const clip = clipById(s.project, clipId)
     return withTextDefaults(clip?.textStyle)[key]
   })
-
-  const snapshotted = useRef(false)
 
   const write = useCallback(
     (next: TextStyle[TKey]) => {
@@ -58,7 +48,6 @@ export function useTextStyleField<TKey extends keyof TextStyle>(
       st.updateClip(clipId, {
         textStyle: { ...withTextDefaults(clip.textStyle), [key]: next },
       })
-      st.resetExport()
     },
     [clipId, key],
   )
@@ -75,27 +64,30 @@ export function useTextStyleField<TKey extends keyof TextStyle>(
 
   const set = useCallback(
     (next: TextStyle[TKey]) => {
-      if (!snapshotted.current) {
-        snapshotted.current = true
-        onEditStart()
-      }
+      // Free while the session is open; the first call arms the ONE snapshot.
+      useEditorStore.getState().beginEditSession()
       throttled(next)
     },
-    [throttled, onEditStart],
+    [throttled],
   )
 
   const commit = useCallback(
     (next?: TextStyle[TKey]) => {
+      const st = useEditorStore.getState()
       if (next !== undefined) {
-        if (!snapshotted.current) onEditStart()
-        // Bypass the throttle so the final value can't be dropped by a
-        // cancelled frame.
+        // Click-type commit (toggle, font pick): its own one-write session.
+        st.beginEditSession()
         throttled.cancel()
         write(next)
+      } else {
+        // End of a drag: the last set() may still be waiting on its frame —
+        // land it INSIDE the session, or it would mutate after the session
+        // closed and escape undo entirely.
+        throttled.flush()
       }
-      snapshotted.current = false
+      st.endEditSession()
     },
-    [throttled, write, onEditStart],
+    [throttled, write],
   )
 
   return { value, set, commit }
@@ -103,16 +95,15 @@ export function useTextStyleField<TKey extends keyof TextStyle>(
 
 /** Patch several style fields at once (presets, background on/off). Always one
  *  mutation, so it takes exactly one undo snapshot. */
-export function useTextStylePatch(clipId: string, onEditStart: () => void) {
+export function useTextStylePatch(clipId: string) {
   return useCallback(
     (patch: Partial<TextStyle>) => {
       const st = useEditorStore.getState()
       const clip = clipById(st.project, clipId)
       if (!clip) return
       const next = { ...withTextDefaults(clip.textStyle), ...patch }
-      onEditStart()
+      st.beginEdit()
       st.updateClip(clipId, { textStyle: next })
-      st.resetExport()
       // A preset can change the family/weight — make sure the face is on its way.
       void ensureFont(
         next.fontFamily,
@@ -120,6 +111,6 @@ export function useTextStylePatch(clipId: string, onEditStart: () => void) {
         clip.text || 'AaGg',
       )
     },
-    [clipId, onEditStart],
+    [clipId],
   )
 }

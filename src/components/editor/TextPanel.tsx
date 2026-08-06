@@ -62,11 +62,8 @@ function previewStyle(style: TextStyle): React.CSSProperties {
 }
 
 export function TextPresetBin({
-  onEditStart,
   onPicked,
 }: {
-  /** Undo snapshot before the insert — the caller owns it, as with media. */
-  onEditStart: () => void
   /** Fired after a preset is picked, so the mobile sheet can advance itself. */
   onPicked?: () => void
 }) {
@@ -80,7 +77,7 @@ export function TextPresetBin({
 
   const add = (preset: TextPreset) => {
     if (disabled) return
-    onEditStart()
+    // insertTextAtTime takes its own undo snapshot.
     insertTextAtTime(preset, useEditorStore.getState().currentTime)
     onPicked?.()
   }

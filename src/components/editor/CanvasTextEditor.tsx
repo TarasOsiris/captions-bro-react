@@ -7,9 +7,9 @@
 // for the editing view and the output to disagree.
 //
 // A real <textarea> rather than contentEditable, deliberately: `useEditorKeyboard`
-// and `useUndoRedo` both already skip their global shortcuts for TEXTAREA
-// targets, so Space, Delete and Cmd+Z stop fighting the editor for free — and
-// emoji, IME composition and the mobile keyboard all just work.
+// already skips its global shortcuts (undo included) for TEXTAREA targets, so
+// Space, Delete and Cmd+Z stop fighting the editor for free — and emoji, IME
+// composition and the mobile keyboard all just work.
 
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useEditorStore } from '@/store/editorStore'
@@ -21,7 +21,6 @@ export function CanvasTextEditor({
   clipId,
   rect,
   frameH,
-  onEditStart,
   onClose,
 }: {
   clipId: string
@@ -29,14 +28,10 @@ export function CanvasTextEditor({
   rect: MediaRect
   /** Frame height, to resolve `fontSize` (a fraction of it) into pixels. */
   frameH: number
-  onEditStart: () => void
   onClose: () => void
 }) {
   const clip = useEditorStore((s) => clipById(s.project, clipId))
   const ref = useRef<HTMLTextAreaElement>(null)
-  // One undo snapshot per editing SESSION, not per keystroke — otherwise 50
-  // entries of single characters bury every real edit.
-  const snapshotted = useRef(false)
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -44,6 +39,16 @@ export function CanvasTextEditor({
     el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
   }, [])
+
+  // One undo entry per editing run: the store session opens on the first
+  // keystroke (beginEditSession below) and ends when the editor goes away —
+  // unmount covers every close path at once (blur, Escape, seek-away).
+  useEffect(
+    () => () => {
+      useEditorStore.getState().endEditSession()
+    },
+    [],
+  )
 
   // Escape and Cmd/Ctrl+Enter close; plain Enter inserts a newline, since
   // multi-line is a first-class feature here.
@@ -72,13 +77,9 @@ export function CanvasTextEditor({
       ref={ref}
       value={clip.text ?? ''}
       onChange={(e) => {
-        if (!snapshotted.current) {
-          snapshotted.current = true
-          onEditStart()
-        }
         const st = useEditorStore.getState()
+        st.beginEditSession()
         st.updateClip(clipId, { text: e.target.value })
-        st.resetExport()
       }}
       onBlur={onClose}
       // Stop the frame's own pointer handlers from starting a move gesture or
