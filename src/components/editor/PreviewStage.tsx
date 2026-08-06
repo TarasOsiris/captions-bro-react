@@ -20,13 +20,15 @@ import {
   applyScale,
   cropValueForDrag,
   hitTestRect,
+  NO_GUIDES,
+  SNAP_PX,
   placeRect,
   rectPoint,
   snapMove,
   visibleRect,
   wrapWidthForDrag,
 } from '@/lib/transform'
-import type { CropInsets, RectAnchor } from '@/lib/transform'
+import type { CropInsets, RectAnchor, SnapGuides } from '@/lib/transform'
 import type { MediaPool } from '@/lib/render/mediaPool'
 import type { Clip, TextStyle, Transform } from '@/lib/model/types'
 import { clamp as clampNumber } from '@/lib/math'
@@ -37,18 +39,22 @@ const MAX_FONT_SIZE = 0.4
 /** Wrap-width bounds as a fraction of canvas width. */
 const MIN_BOX_WIDTH = 0.05
 const MAX_BOX_WIDTH = 1
-/** How close (px) a dragged clip must get to a canvas edge or center line
- *  before it snaps — the Timeline's drag threshold, so both feel the same. */
-const SNAP_PX = 8
 
-/** The canvas alignment guides a move gesture currently has engaged, as
- *  fractions of the frame. Chrome, and React-local: routing them through the
- *  store would bump the document revision and pollute undo on every move. */
-interface SnapGuides {
-  x: number | null
-  y: number | null
+/** One canvas alignment guide — the shared look stated once, only the axis
+ *  geometry differing. */
+function GuideLine({ axis, frac }: { axis: 'x' | 'y'; frac: number }) {
+  const pct = `${(frac * 100).toFixed(4)}%`
+  return (
+    <div
+      className={`pointer-events-none absolute z-20 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)] ${
+        axis === 'x'
+          ? 'inset-y-0 w-[2px] -translate-x-1/2'
+          : 'inset-x-0 h-[2px] -translate-y-1/2'
+      }`}
+      style={axis === 'x' ? { left: pct } : { top: pct }}
+    />
+  )
 }
-const NO_GUIDES: SnapGuides = { x: null, y: null }
 
 interface PreviewStageProps {
   poolRef: React.RefObject<MediaPool>
@@ -133,6 +139,9 @@ type Gesture =
       kind: 'move'
       startX: number
       startY: number
+      /** Natural size in frame px, measured once at gesture start — a move
+       *  writes only the transform, which the natural size does not depend on. */
+      size: { w: number; h: number }
     })
   /**
    * A corner drag: resize while holding the corner OPPOSITE the grabbed one
@@ -205,6 +214,8 @@ export function PreviewStage({
 
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
+  // Chrome, and React-local: routing the guides through the store would bump
+  // the document revision and pollute undo on every move.
   const [guides, setGuides] = useState<SnapGuides>(NO_GUIDES)
   // Equality-guarded, so a move that doesn't change the engaged set costs no
   // extra render on top of the one the transform write already forces.
@@ -519,6 +530,7 @@ export function PreviewStage({
           startX: e.clientX,
           startY: e.clientY,
           start: clip.transform,
+          size,
         }
         startGesture(el, e, 'grabbing')
         return
@@ -542,16 +554,16 @@ export function PreviewStage({
       )
       // Recomputed from `g.start` every move, so dragging on past a snap line
       // releases it — no modifier-key escape hatch needed.
-      const clip = clipById(useEditorStore.getState().project, g.clipId)
-      const size = clip ? naturalSizeFor(clip, fr.width, fr.height) : null
-      if (!size) {
-        setClipTransform(g.clipId, moved) // size unknown — degrade to no snap
-        updateGuides(NO_GUIDES)
-        return
-      }
-      const snap = snapMove(moved, size.w, size.h, fr.width, fr.height, SNAP_PX)
+      const snap = snapMove(
+        moved,
+        g.size.w,
+        g.size.h,
+        fr.width,
+        fr.height,
+        SNAP_PX,
+      )
       setClipTransform(g.clipId, snap.transform)
-      updateGuides({ x: snap.guideX, y: snap.guideY })
+      updateGuides(snap.guides)
     } else if (g.kind === 'corner') {
       const fr = el.getBoundingClientRect()
       const clip = clipById(useEditorStore.getState().project, g.clipId)
@@ -714,18 +726,8 @@ export function PreviewStage({
             engaged. %-positioned, so the one-render-stale frameSize can't
             misplace them; independent of showChrome, since they exist only
             mid-gesture. Chrome, never composited — so never exported. */}
-        {guides.x != null && (
-          <div
-            className="pointer-events-none absolute inset-y-0 z-20 w-[2px] -translate-x-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
-            style={{ left: `${(guides.x * 100).toFixed(4)}%` }}
-          />
-        )}
-        {guides.y != null && (
-          <div
-            className="pointer-events-none absolute inset-x-0 z-20 h-[2px] -translate-y-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
-            style={{ top: `${(guides.y * 100).toFixed(4)}%` }}
-          />
-        )}
+        {guides.x != null && <GuideLine axis="x" frac={guides.x} />}
+        {guides.y != null && <GuideLine axis="y" frac={guides.y} />}
 
         {/* Selection chrome for the selected clip (paused only), positioned by the
             same mediaRect the compositor draws with — never composited/exported. */}

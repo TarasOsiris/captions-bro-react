@@ -51,6 +51,10 @@ const MIN_SCALE = 0.1
 const MAX_SCALE = 10
 /** Rotation lands on a right angle when within this many degrees of one. */
 const SNAP_DEG = 4
+/** How close (px) a drag must get to a snap target before it engages — shared
+ *  by the timeline's clip drag and the preview's canvas guides, so the two
+ *  drags feel the same. */
+export const SNAP_PX = 8
 /** A trim always leaves at least this fraction of a dimension visible. */
 const MIN_VISIBLE = 0.05
 
@@ -356,13 +360,19 @@ export function applyMove(
   return { ...t, tx: t.tx + dxFrac, ty: t.ty + dyFrac }
 }
 
+/** The alignment guides a snapped move has engaged: the vertical line's x as a
+ *  fraction of canvas width, the horizontal line's y as a fraction of canvas
+ *  height; null = that axis is free. */
+export interface SnapGuides {
+  x: number | null
+  y: number | null
+}
+export const NO_GUIDES: SnapGuides = { x: null, y: null }
+
 /** A move corrected by canvas snapping, plus the guides it engaged. */
 export interface MoveSnap {
   transform: Transform
-  /** Engaged vertical guide's x, as a fraction of canvas width; null = free. */
-  guideX: number | null
-  /** Engaged horizontal guide's y, as a fraction of canvas height. */
-  guideY: number | null
+  guides: SnapGuides
 }
 
 /**
@@ -373,8 +383,8 @@ export interface MoveSnap {
  * Distances are measured in PIXELS, not in the fractional units `tx`/`ty` live
  * in — a fraction-based threshold would feel ~1.8× tighter on x than on y for a
  * 16:9 canvas. Each axis resolves independently; an axis that finds no candidate
- * returns its input coordinate VERBATIM, so free movement is byte-identical to
- * an unsnapped drag.
+ * returns its input coordinate VERBATIM (a fully free move returns `t` itself),
+ * so free movement is byte-identical to an unsnapped drag.
  */
 export function snapMove(
   t: Transform,
@@ -384,27 +394,30 @@ export function snapMove(
   canvasH: number,
   thresholdPx: number,
 ): MoveSnap {
-  if (canvasW <= 0 || canvasH <= 0)
-    return { transform: t, guideX: null, guideY: null }
-  const b = rectBounds(visibleRect(t, naturalW, naturalH, canvasW, canvasH))
+  if (canvasW <= 0 || canvasH <= 0) return { transform: t, guides: NO_GUIDES }
+  const r = visibleRect(t, naturalW, naturalH, canvasW, canvasH)
+  const b = rectBounds(r)
   const x = snapAxis(
-    [(b.left + b.right) / 2, b.left, b.right],
+    [r.cx, b.left, b.right],
     [canvasW / 2, 0, canvasW],
     thresholdPx,
   )
   const y = snapAxis(
-    [(b.top + b.bottom) / 2, b.top, b.bottom],
+    [r.cy, b.top, b.bottom],
     [canvasH / 2, 0, canvasH],
     thresholdPx,
   )
+  if (!x && !y) return { transform: t, guides: NO_GUIDES }
   return {
     transform: {
       ...t,
       tx: x ? t.tx + x.delta / canvasW : t.tx,
       ty: y ? t.ty + y.delta / canvasH : t.ty,
     },
-    guideX: x ? x.target / canvasW : null,
-    guideY: y ? y.target / canvasH : null,
+    guides: {
+      x: x ? x.target / canvasW : null,
+      y: y ? y.target / canvasH : null,
+    },
   }
 }
 

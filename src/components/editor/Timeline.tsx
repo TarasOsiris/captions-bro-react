@@ -50,6 +50,7 @@ import { NUDGE_SEC } from '@/hooks/useEditorKeyboard'
 import { DEFAULT_IMAGE_DURATION_SEC, formatTimecode } from '@/lib/media'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { clamp } from '@/lib/math'
+import { SNAP_PX } from '@/lib/transform'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
 import { TIMELINE_PX_PER_SEC, TIMELINE_TILE_W } from '@/lib/thumbs'
 import { MIN_CLIP_DURATION } from '@/lib/model/lanes'
@@ -72,8 +73,6 @@ const CLIP_GAP = 4
 const RULER_FALLBACK_SEC = 30
 /** Pointer travel (px) before a clip press becomes a drag rather than a click. */
 const DRAG_THRESHOLD = 4
-/** How close (px) a dragged overlay clip must get to an edge before it snaps. */
-const SNAP_PX = 8
 /** How near (px) the pointer must be to the scroll viewport's top/bottom edge
  *  before a vertical clip drag starts nudging the lanes into view. */
 const EDGE_SCROLL_ZONE = 24

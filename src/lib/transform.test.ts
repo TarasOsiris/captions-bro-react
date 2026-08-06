@@ -451,56 +451,60 @@ describe('snapMove — canvas edges and center lines', () => {
   })
   const snap = (t: Transform, w = NAT.w, h = NAT.h) =>
     snapMove(t, w, h, W, H, 8)
+  /** Canvas-px position of a box edge under `t`, so each assertion doesn't
+   *  restate (and risk transposing) the center→edge arithmetic. */
+  const leftX = (t: Transform, w = NAT.w) => t.tx * W + W / 2 - w / 2
+  const rightX = (t: Transform, w = NAT.w) => t.tx * W + W / 2 + w / 2
+  const topY = (t: Transform, h = NAT.h) => t.ty * H + H / 2 - h / 2
 
   it('snaps a centered box to the center lines', () => {
     const s = snap(at(800, 450))
-    expect(s.guideX).toBe(0.5)
-    expect(s.guideY).toBe(0.5)
+    expect(s.guides.x).toBe(0.5)
+    expect(s.guides.y).toBe(0.5)
     expect(s.transform.tx).toBeCloseTo(0)
     expect(s.transform.ty).toBeCloseTo(0)
   })
 
   it('snaps the left edge flush to the canvas edge', () => {
     const s = snap(at(105, 200)) // left edge 5px in
-    expect(s.guideX).toBe(0)
-    expect(s.transform.tx * W + W / 2 - NAT.w / 2).toBeCloseTo(0)
+    expect(s.guides.x).toBe(0)
+    expect(leftX(s.transform)).toBeCloseTo(0)
   })
 
   it('snaps the right edge flush to the canvas edge', () => {
     const s = snap(at(1496, 200)) // right edge 4px short
-    expect(s.guideX).toBe(1)
-    expect(s.transform.tx * W + W / 2 + NAT.w / 2).toBeCloseTo(W)
+    expect(s.guides.x).toBe(1)
+    expect(rightX(s.transform)).toBeCloseTo(W)
   })
 
   it('mirrors on the Y axis (top, bottom and the center line)', () => {
-    expect(snap(at(200, 55)).guideY).toBe(0) // top edge 5px in
-    expect(snap(at(200, 845)).guideY).toBe(1) // bottom edge 5px short
-    expect(snap(at(200, 450)).guideY).toBe(0.5)
+    expect(snap(at(200, 55)).guides.y).toBe(0) // top edge 5px in
+    expect(snap(at(200, 845)).guides.y).toBe(1) // bottom edge 5px short
+    expect(snap(at(200, 450)).guides.y).toBe(0.5)
   })
 
-  it('returns tx/ty VERBATIM when nothing is in range', () => {
+  it('returns the transform VERBATIM when nothing is in range', () => {
     const t = at(200, 200)
     const s = snap(t)
-    // Strict equality, not closeness: a free move must be byte-identical to an
-    // unsnapped one — no float noise from a needless re-derivation.
-    expect(s.transform.tx).toBe(t.tx)
-    expect(s.transform.ty).toBe(t.ty)
-    expect(s.guideX).toBeNull()
-    expect(s.guideY).toBeNull()
+    // Identity, not closeness: a fully free move returns the input transform
+    // itself — no clone, no float noise from a needless re-derivation.
+    expect(s.transform).toBe(t)
+    expect(s.guides.x).toBeNull()
+    expect(s.guides.y).toBeNull()
   })
 
   it('does not snap exactly AT the threshold (the snapTime convention)', () => {
     const t = at(108, 200) // left edge exactly 8px in
     const s = snap(t)
-    expect(s.guideX).toBeNull()
-    expect(s.transform.tx).toBe(t.tx)
+    expect(s.guides.x).toBeNull()
+    expect(s.transform).toBe(t)
   })
 
   it('resolves the axes independently', () => {
     const t = at(105, 200) // x in range, y nowhere near a target
     const s = snap(t)
-    expect(s.guideX).toBe(0)
-    expect(s.guideY).toBeNull()
+    expect(s.guides.x).toBe(0)
+    expect(s.guides.y).toBeNull()
     expect(s.transform.ty).toBe(t.ty)
   })
 
@@ -508,16 +512,16 @@ describe('snapMove — canvas edges and center lines', () => {
     // A 1584-wide box centered at 795: the center line is 5px away and is
     // tested first, but the left edge is only 3px from the canvas edge.
     const s = snap(at(795, 200), 1584, 100)
-    expect(s.guideX).toBe(0)
-    expect(s.transform.tx * W + W / 2 - 1584 / 2).toBeCloseTo(0)
+    expect(s.guides.x).toBe(0)
+    expect(leftX(s.transform, 1584)).toBeCloseTo(0)
     // ...and the center wins once it is genuinely the closer of the two.
-    expect(snap(at(797, 200), 1584, 100).guideX).toBe(0.5)
+    expect(snap(at(797, 200), 1584, 100).guides.x).toBe(0.5)
   })
 
   it('breaks a tie in favour of the center guide', () => {
     // A canvas-wide box has all three x candidates at distance 0. It must show
     // the one center line, not both edges.
-    expect(snap(at(800, 200), W, 100).guideX).toBe(0.5)
+    expect(snap(at(800, 200), W, 100).guides.x).toBe(0.5)
   })
 
   it('snaps the ROTATED extent, not the unrotated box', () => {
@@ -526,8 +530,8 @@ describe('snapMove — canvas edges and center lines', () => {
     // outside the threshold, and nothing on this axis would snap at all.
     const t = { ...at(54, 450), rotationDeg: 90 }
     const s = snapMove(t, 400, 100, W, H, 8)
-    expect(s.guideX).toBe(0)
-    expect(s.transform.tx * W + W / 2 - 100 / 2).toBeCloseTo(0)
+    expect(s.guides.x).toBe(0)
+    expect(leftX(s.transform, 100)).toBeCloseTo(0)
   })
 
   it('snaps the VISIBLE edge of a cropped clip', () => {
@@ -535,7 +539,7 @@ describe('snapMove — canvas edges and center lines', () => {
     // while every full-rect candidate is 45px+ away.
     const t = applyCrop(at(55, 200), 'left', 0.25)
     const s = snap(t)
-    expect(s.guideX).toBe(0)
+    expect(s.guides.x).toBe(0)
     const r = visibleRect(s.transform, NAT.w, NAT.h, W, H)
     expect(rectBounds(r).left).toBeCloseTo(0)
   })
@@ -545,15 +549,15 @@ describe('snapMove — canvas edges and center lines', () => {
     // 8/1600 an x-derived fractional threshold would allow, so a fraction-based
     // implementation refuses this snap.
     const s = snap(at(200, 57)) // top edge 7px in
-    expect(s.guideY).toBe(0)
-    expect(s.transform.ty * H + H / 2 - NAT.h / 2).toBeCloseTo(0)
+    expect(s.guides.y).toBe(0)
+    expect(topY(s.transform)).toBeCloseTo(0)
   })
 
   it('passes through a degenerate canvas', () => {
     const t = at(105, 200)
     const s = snapMove(t, NAT.w, NAT.h, 0, 0, 8)
     expect(s.transform).toBe(t)
-    expect(s.guideX).toBeNull()
-    expect(s.guideY).toBeNull()
+    expect(s.guides.x).toBeNull()
+    expect(s.guides.y).toBeNull()
   })
 })
