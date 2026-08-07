@@ -2,7 +2,8 @@
 // are SSR-safe and unit-testable.
 
 import { DEFAULT_IMAGE_DURATION_SEC } from '@/lib/media'
-import { CANVAS_ASPECT, IDENTITY } from '@/lib/transform'
+import { IDENTITY } from '@/lib/transform'
+import { canvasForRatio } from './canvas'
 import { uid } from './ids'
 import { DEFAULT_TEXT_CONTENT, withTextDefaults } from './text'
 import type {
@@ -15,16 +16,9 @@ import type {
   Track,
 } from './types'
 
-/** Default output canvas: 1080p 16:9 on black. */
-/** Output height (px); the width is DERIVED from `CANVAS_ASPECT` so the ratio
- *  has exactly one definition in the codebase (transform.ts). */
-const DEFAULT_CANVAS_HEIGHT = 1080
-
-export const DEFAULT_CANVAS: CanvasSettings = {
-  width: DEFAULT_CANVAS_HEIGHT * CANVAS_ASPECT,
-  height: DEFAULT_CANVAS_HEIGHT,
-  background: '#000000',
-}
+/** Default output canvas: 1080p 16:9 on black. Taken from the preset table so
+ *  there is one place the shipped ratios are written down. */
+export const DEFAULT_CANVAS: CanvasSettings = canvasForRatio('16:9', '#000000')
 
 export function createTrack(type: Track['type']): Track {
   return { id: uid('track'), type, clips: [] }

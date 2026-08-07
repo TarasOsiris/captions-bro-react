@@ -38,6 +38,13 @@ export interface DrawItem {
   transform: Transform
   /** The decoded source; null while loading → the item is skipped this frame. */
   source: RenderSource | null
+  /** Layer alpha, 0…1. Absent = 1 (fully opaque).
+   *
+   *  Applied as `globalAlpha` around the WHOLE item, which is why text does not
+   *  use it: `paintText` composites in several passes (background box → shadow
+   *  → stroke → fill), so a layer-wide alpha would let the outline show through
+   *  the glyph fill. Text has its own glyph-level `TextStyle.opacity`. */
+  opacity?: number
 }
 
 /** Composite `items` onto a `canvas`-sized context: background, then each item at
@@ -52,6 +59,10 @@ export function drawScene(
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   for (const item of items) {
     if (!item.source) continue
+    const alpha = item.opacity ?? 1
+    // Fully transparent: skip the placement work entirely rather than painting
+    // an invisible frame.
+    if (alpha <= 0) continue
     // Both arms end in `placeRect`; media just contain-fits its aspect first.
     const rect = item.source.size
       ? placeRect(
@@ -68,6 +79,8 @@ export function drawScene(
           canvas.height,
         )
     ctx.save()
+    // Inside the per-item save/restore, so it cannot leak onto the next item.
+    if (alpha < 1) ctx.globalAlpha = alpha
     ctx.translate(rect.cx, rect.cy)
     if (rect.rotationDeg) ctx.rotate((rect.rotationDeg * Math.PI) / 180)
     // Crop = clip to the kept sub-rect, then paint the media at full size. So a

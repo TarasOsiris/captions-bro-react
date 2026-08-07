@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   audibleClips,
+  clipCarriesAudio,
   clipGain,
   hasAudioClips,
+  intendsAudio,
   planAudioSchedule,
 } from './audio'
 import { createProject } from './factories'
@@ -128,5 +130,63 @@ describe('planAudioSchedule', () => {
       durations,
     )
     expect(entry.gain).toBe(1)
+  })
+})
+
+describe('intendsAudio', () => {
+  function project(clips: Partial<Clip>[]): Project {
+    const p = createProject('t')
+    p.assets.a1 = {
+      id: 'a1',
+      kind: 'video',
+      name: 'a',
+      sizeBytes: 1,
+      file: new File([], 'a'),
+      url: 'blob:a',
+      naturalWidth: 16,
+      naturalHeight: 9,
+      durationSec: 10,
+      thumbs: [],
+    }
+    p.tracks[0].clips = clips.map((c, i) => ({
+      id: `c${i.toString()}`,
+      type: 'video',
+      assetId: 'a1',
+      start: i,
+      duration: 1,
+      trimIn: 0,
+      transform: { ...IDENTITY },
+      ...c,
+    }))
+    return p
+  }
+
+  it('is true when any audio-carrying clip is audible', () => {
+    expect(intendsAudio(project([{ muted: true }, {}]))).toBe(true)
+  })
+
+  it('is FALSE when every clip is muted — silence the user asked for', () => {
+    // The verdict both export paths ask, so the composite path stops warning
+    // "your export has no sound" about a deliberate mute.
+    expect(intendsAudio(project([{ muted: true }, { volume: 0 }]))).toBe(false)
+  })
+
+  it('ignores clip types that carry no sound at all', () => {
+    expect(intendsAudio(project([{ type: 'image' }, { type: 'text' }]))).toBe(
+      false,
+    )
+  })
+
+  it('is false for an empty project', () => {
+    expect(intendsAudio(createProject('t'))).toBe(false)
+  })
+})
+
+describe('clipCarriesAudio', () => {
+  it('is true for the sound-bearing types only', () => {
+    expect(clipCarriesAudio({ type: 'video' })).toBe(true)
+    expect(clipCarriesAudio({ type: 'audio' })).toBe(true)
+    expect(clipCarriesAudio({ type: 'image' })).toBe(false)
+    expect(clipCarriesAudio({ type: 'text' })).toBe(false)
   })
 })

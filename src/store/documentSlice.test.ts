@@ -352,6 +352,82 @@ describe('duplicate / split / remove on an overlay track', () => {
   })
 })
 
+describe('removeClip ripples the magnetic track', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3), clip('c', 2)]))
+  })
+
+  it('closes the gap left by a middle clip', () => {
+    useEditorStore.getState().removeClip('b')
+    const clips = trackClips()
+    expect(clips.map((c) => c.id)).toEqual(['a', 'c'])
+    // The whole point: 'c' slides back to 5, it does not stay at 8.
+    expectPacked(clips)
+  })
+
+  it('leaves free-lane siblings where they are', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 2, 2), laneId)
+    useEditorStore.getState().addClip(textClip('t2', 7, 2), laneId)
+    useEditorStore.getState().removeClip('t1')
+    const lane = useEditorStore
+      .getState()
+      .project.tracks.find((t) => t.id === laneId)!
+    expect(lane.clips.map((c) => c.start)).toEqual([7])
+  })
+})
+
+describe('removeClips', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3), clip('c', 2)]))
+  })
+
+  it('removes across tracks and re-packs the magnetic one', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 2, 2), laneId)
+    useEditorStore.getState().addClip(textClip('t2', 7, 2), laneId)
+
+    useEditorStore.getState().removeClips(['b', 't1'])
+
+    expect(trackClips().map((c) => c.id)).toEqual(['a', 'c'])
+    expectPacked(trackClips())
+    const lane = useEditorStore
+      .getState()
+      .project.tracks.find((t) => t.id === laneId)!
+    expect(lane.clips.map((c) => c.id)).toEqual(['t2'])
+  })
+
+  it('is ONE undo entry however many clips go', () => {
+    const before = useEditorStore.getState().undoStack.length
+    useEditorStore.getState().beginEdit()
+    useEditorStore.getState().removeClips(['a', 'b'])
+    expect(useEditorStore.getState().undoStack.length).toBe(before + 1)
+
+    useEditorStore.getState().undo()
+    expect(trackClips().map((c) => c.id)).toEqual(['a', 'b', 'c'])
+    expectPacked(trackClips())
+  })
+
+  it('ignores ids that are not in the document', () => {
+    useEditorStore.getState().removeClips(['nope', 'b'])
+    expect(trackClips().map((c) => c.id)).toEqual(['a', 'c'])
+  })
+
+  it('prunes an overlay lane emptied by the batch', () => {
+    const laneId = useEditorStore.getState().addOverlayTrack()
+    useEditorStore.getState().addClip(textClip('t1', 2, 2), laneId)
+    useEditorStore.getState().addClip(textClip('t2', 7, 2), laneId)
+    useEditorStore.getState().removeClips(['t1', 't2'])
+    expect(
+      useEditorStore.getState().project.tracks.find((t) => t.id === laneId),
+    ).toBeUndefined()
+  })
+})
+
 // ── Cross-track moves: the vertical drag's commit actions ────────────────────
 
 describe('moveClipToTrack', () => {
@@ -549,6 +625,18 @@ describe('touchDocument seam', () => {
       },
     ],
     [
+      'setCanvas',
+      () => {
+        st().setCanvas({ width: 1080, height: 1920, background: '#000000' })
+      },
+    ],
+    [
+      'removeClips',
+      () => {
+        st().removeClips(['b', 't1'])
+      },
+    ],
+    [
       'splitClip',
       () => {
         st().splitClip('a', 2)
@@ -641,5 +729,101 @@ describe('setClipTrimWindow — the free-lane edge trim', () => {
       .getState()
       .setClipTrimWindow('t1', { start: 4, trimIn: 0, duration: 8 })
     expect(t1()).toMatchObject({ start: 4, duration: 5 })
+  })
+})
+
+describe('splitClip returns both halves', () => {
+  beforeEach(() => {
+    useEditorStore.getState().replaceProject(projectWith([clip('a', 6)]))
+  })
+
+  it('hands back the two ids so the caller can select one', () => {
+    // The Timeline selects the RIGHT half; without a return value it had to
+    // deselect, dropping the user into an empty inspector after every cut.
+    const halves = useEditorStore.getState().splitClip('a', 2)
+    expect(halves).not.toBeNull()
+    expect(trackClips().map((c) => c.id)).toEqual([
+      halves!.leftId,
+      halves!.rightId,
+    ])
+  })
+
+  it('returns null for a cut ON an edge or outside the clip', () => {
+    const st = useEditorStore.getState
+    expect(st().splitClip('a', 0)).toBeNull()
+    expect(st().splitClip('a', 6)).toBeNull()
+    expect(st().splitClip('a', 99)).toBeNull()
+    expect(trackClips()).toHaveLength(1)
+  })
+
+  it('returns null for an unknown clip', () => {
+    expect(useEditorStore.getState().splitClip('nope', 1)).toBeNull()
+  })
+})
+
+describe('clipboard slice', () => {
+  it('starts empty and holds what it is given', () => {
+    useEditorStore.setState({ clipboard: null })
+    expect(useEditorStore.getState().clipboard).toBeNull()
+    const c = clip('x', 3)
+    useEditorStore.getState().setClipboard(c)
+    expect(useEditorStore.getState().clipboard?.id).toBe('x')
+  })
+
+  it('SURVIVES replaceProject — a copy outlives an undo or a reload', () => {
+    useEditorStore.getState().setClipboard(clip('x', 3))
+    useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
+    expect(useEditorStore.getState().clipboard?.id).toBe('x')
+  })
+
+  it('is NOT captured by undo — copying is not a document edit', () => {
+    useEditorStore.getState().replaceProject(projectWith([clip('a', 5)]))
+    const before = useEditorStore.getState()
+    useEditorStore.getState().setClipboard(clip('x', 3))
+    const after = useEditorStore.getState()
+    expect(after.undoStack.length).toBe(before.undoStack.length)
+    // The revision counter runs across the whole suite, so compare it rather
+    // than expecting an absolute value.
+    expect(after.documentRevision).toBe(before.documentRevision)
+  })
+})
+
+describe('setCanvas', () => {
+  beforeEach(() => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWith([clip('a', 5), clip('b', 3)]))
+  })
+
+  it('swaps the canvas and is undoable', () => {
+    const portrait = { width: 1080, height: 1920, background: '#000000' }
+    useEditorStore.getState().beginEdit()
+    useEditorStore.getState().setCanvas(portrait)
+    expect(useEditorStore.getState().project.canvas).toEqual(portrait)
+    useEditorStore.getState().undo()
+    expect(useEditorStore.getState().project.canvas.width).toBe(1920)
+  })
+
+  it('leaves every clip transform DEEP-EQUAL — it does not reshape clips', () => {
+    // The decision made executable: transforms are canvas-RELATIVE, so
+    // placeRect re-frames them by construction. Rewriting them would be a
+    // second placement path, and would make 16:9 → 9:16 → 16:9 lossy.
+    const before = trackClips().map((c) => structuredClone(c.transform))
+    useEditorStore
+      .getState()
+      .setCanvas({ width: 1080, height: 1920, background: '#000000' })
+    expect(trackClips().map((c) => c.transform)).toEqual(before)
+  })
+
+  it('is a round trip: 16:9 → 9:16 → 16:9 restores the exact framing', () => {
+    const original = useEditorStore.getState().project.canvas
+    const framed = { ...IDENTITY, scale: 1.7, tx: 0.2, ty: -0.1 }
+    useEditorStore.getState().setClipTransform('a', framed)
+    useEditorStore
+      .getState()
+      .setCanvas({ width: 1080, height: 1920, background: '#000000' })
+    useEditorStore.getState().setCanvas(original)
+    expect(trackClips()[0].transform).toEqual(framed)
+    expect(useEditorStore.getState().project.canvas).toEqual(original)
   })
 })

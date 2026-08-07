@@ -12,6 +12,7 @@
 
 import { textSourceForClip } from './textSource'
 import { clipIsLiveAt } from '@/lib/model/selectors'
+import { clipOpacity } from '@/lib/model/visual'
 import type { DrawItem, RenderSource } from './compositor'
 import type { SceneItem } from '@/lib/model/scene'
 import type { Clip } from '@/lib/model/types'
@@ -23,6 +24,46 @@ export type ResolveMediaSource = (item: SceneItem) => RenderSource | null
 /** Injectable only so the node test env (no DOM, so no canvas measurer) can
  *  drive the branch; production callers never pass it. */
 type ResolveText = typeof textSourceForClip
+
+/**
+ * The per-clip VISUAL properties every render path must carry onto a media
+ * layer. Widening this type is a compile error at `mediaDrawItem`'s body, which
+ * is the point: `videoPath`'s fast path builds its DrawItem by hand, outside
+ * the scene walk, and could otherwise silently omit a new property — the
+ * preview would show it and the export would not.
+ *
+ * A `Clip` structurally satisfies it, so call sites just pass the clip.
+ */
+export type MediaLayer = Pick<Clip, 'transform' | 'opacity'>
+
+/** The per-clip visual properties a TEXT layer carries. Deliberately NOT
+ *  `opacity`: `paintText` composites in several passes (background box → shadow
+ *  → stroke → fill), so a layer-wide `globalAlpha` would let the outline show
+ *  through the glyph fill. Text fades through `TextStyle.opacity` instead. */
+export type TextLayer = Pick<Clip, 'transform'>
+
+/** The ONE constructor for a media DrawItem. Every path goes through it —
+ *  `sceneDrawItems` for the preview and the timeline compositor, and
+ *  `videoPath`'s synchronous `process` hook for the fast path. */
+export function mediaDrawItem(
+  layer: MediaLayer,
+  source: RenderSource | null,
+): DrawItem {
+  return {
+    transform: layer.transform,
+    source,
+    opacity: clipOpacity(layer),
+  }
+}
+
+/** The ONE constructor for a text DrawItem — the sibling of `mediaDrawItem`,
+ *  and here for the same reason: the text arm is built in TWO places (the scene
+ *  walk, serving the preview and the timeline compositor, and `liveTextItems`,
+ *  serving the export fast path), so a property added to one and not the other
+ *  is silently a preview-vs-export drift. */
+export function textDrawItem(layer: TextLayer, source: RenderSource): DrawItem {
+  return { transform: layer.transform, source }
+}
 
 /**
  * Draw items for a resolved scene, in the scene's own draw order.
@@ -43,12 +84,12 @@ export function sceneDrawItems(
     const clip = item.clip
     if (clip.type === 'text') {
       const source = resolveText(clip, canvasW, canvasH)
-      if (source) items.push({ transform: clip.transform, source })
+      if (source) items.push(textDrawItem(clip, source))
       continue
     }
     if (clip.type === 'audio') continue
     const source = resolveMedia(item)
-    if (source) items.push({ transform: clip.transform, source })
+    if (source) items.push(mediaDrawItem(clip, source))
   }
   return items
 }
@@ -74,7 +115,7 @@ export function liveTextItems(
   for (const clip of overlays) {
     if (!clipIsLiveAt(clip, t)) continue
     const source = resolveText(clip, canvasW, canvasH)
-    if (source) items.push({ transform: clip.transform, source })
+    if (source) items.push(textDrawItem(clip, source))
   }
   return items
 }

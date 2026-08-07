@@ -8,7 +8,7 @@
 // MobileDock composes MediaRail + MediaBin for the < lg layout.
 
 import { useState } from 'react'
-import { Captions, Film, Music, Plus, Type } from 'lucide-react'
+import { Captions, Film, Frame, Music, Plus, Type } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -18,6 +18,7 @@ import {
 import { useEditorStore } from '@/store/editorStore'
 import { assetOf, mediaClips, revealTime } from '@/lib/model/selectors'
 import type { Clip } from '@/lib/model/types'
+import { CanvasPanel } from './CanvasPanel'
 import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/media'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
@@ -118,6 +119,7 @@ const RAIL_ITEMS: Array<{
 }> = [
   { id: 'media', icon: <Film className="h-5 w-5" />, label: 'Media' },
   { id: 'text', icon: <Type className="h-5 w-5" />, label: 'Text' },
+  { id: 'canvas', icon: <Frame className="h-5 w-5" />, label: 'Canvas' },
   { id: null, icon: <Music className="h-5 w-5" />, label: 'Audio' },
   { id: null, icon: <Captions className="h-5 w-5" />, label: 'Captions' },
 ]
@@ -373,7 +375,13 @@ export function MediaPanel(binProps: MediaBinProps) {
         role="tabpanel"
         className="flex min-w-0 flex-1 flex-col"
       >
-        {tab === 'text' ? <TextPresetBin /> : <MediaBin {...binProps} />}
+        {tab === 'text' ? (
+          <TextPresetBin />
+        ) : tab === 'canvas' ? (
+          <CanvasPanel />
+        ) : (
+          <MediaBin {...binProps} />
+        )}
       </div>
 
       {/* Last child: it sits on the RIGHT edge, so tab order matches the eye. */}

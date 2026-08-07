@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   bitmapSource,
   liveTextItems,
+  mediaDrawItem,
   sceneDrawItems,
   videoSampleSource,
 } from './sceneItems'
@@ -43,6 +44,30 @@ function clip(id: string, type: Clip['type'], patch: Partial<Clip> = {}): Clip {
 function sceneOf(clips: Clip[]): SceneItem[] {
   return clips.map((c) => ({ clip: c, asset: null, localTime: 0 }))
 }
+
+describe('mediaDrawItem is the one media-layer constructor', () => {
+  // The anti-drift assertion. `videoPath`'s fast path builds its DrawItem by
+  // hand, outside the scene walk; if a new per-clip visual property is added to
+  // the scene arm without going through `mediaDrawItem`, this goes red rather
+  // than the export silently losing the property.
+  it('produces exactly what the scene walk produces for a media clip', () => {
+    const source: RenderSource = { aspect: 1, paint: () => undefined }
+    const c = clip('a', 'video', { transform: { ...IDENTITY, tx: 0.25 } })
+    const [fromScene] = sceneDrawItems(
+      sceneOf([c]),
+      100,
+      100,
+      () => source,
+      fakeText,
+    )
+    expect(fromScene).toEqual(mediaDrawItem(c, source))
+  })
+
+  it('carries the transform by reference, not a copy', () => {
+    const c = clip('a', 'video')
+    expect(mediaDrawItem(c, null).transform).toBe(c.transform)
+  })
+})
 
 describe('sceneDrawItems', () => {
   it('keeps the scene draw order', () => {
@@ -170,5 +195,53 @@ describe('source adapters', () => {
 
   it('bitmapSource reports the bitmap aspect', () => {
     expect(bitmapSource({ width: 800, height: 400 }).aspect).toBe(2)
+  })
+})
+
+describe('opacity reaches media items and never text', () => {
+  it('carries a media clip opacity onto its DrawItem', () => {
+    const [i] = sceneDrawItems(
+      sceneOf([clip('a', 'video', { opacity: 0.4 })]),
+      100,
+      100,
+      () => ({ aspect: 1, paint: () => undefined }),
+      fakeText,
+    )
+    expect(i.opacity).toBeCloseTo(0.4)
+  })
+
+  it('defaults a media clip with no opacity to fully opaque', () => {
+    const [i] = sceneDrawItems(
+      sceneOf([clip('a', 'video')]),
+      100,
+      100,
+      () => ({ aspect: 1, paint: () => undefined }),
+      fakeText,
+    )
+    expect(i.opacity).toBe(1)
+  })
+
+  it('NEVER puts a layer opacity on a text item', () => {
+    // Text fades through TextStyle.opacity; a layer-wide globalAlpha over
+    // paintText's several passes would show the outline through the fill.
+    const [i] = sceneDrawItems(
+      sceneOf([clip('t', 'text', { opacity: 0.4 })]),
+      100,
+      100,
+      () => null,
+      fakeText,
+    )
+    expect(i.opacity).toBeUndefined()
+  })
+
+  it('keeps liveTextItems (the fast path overlays) opacity-free too', () => {
+    const [i] = liveTextItems(
+      [clip('t', 'text', { opacity: 0.4 })],
+      0,
+      100,
+      100,
+      fakeText,
+    )
+    expect(i.opacity).toBeUndefined()
   })
 })

@@ -1,4 +1,4 @@
-// The single source of truth for how the media is placed on the 16:9 project
+// The single source of truth for how the media is placed on the project
 // canvas. The preview (CSS transform in `PreviewStage`) and the export
 // compositor (canvas 2D in `export.ts`) BOTH derive placement from here, so what
 // you see in the preview is exactly what exports. Any change to this math must be
@@ -19,7 +19,9 @@ export interface CropInsets {
   left: number
 }
 
-/** A media placement, in normalized (resolution-independent) 16:9-canvas terms. */
+/** A media placement, in normalized (resolution-independent) canvas terms —
+ *  every field is a FRACTION of the canvas, so the same transform frames the
+ *  clip identically at any canvas size OR aspect. */
 export interface Transform {
   /** Multiple of the object-contain "fit" size. 1 = fitted, >1 = zoomed in. */
   scale: number
@@ -44,11 +46,19 @@ export function cropInsets(t: Transform): CropInsets {
   return t.crop ?? NO_CROP
 }
 
-/** The output aspect ratio of the project canvas (and the preview frame). */
-export const CANVAS_ASPECT = 16 / 9
+/** Is anything actually trimmed off? True for an absent crop AND for one whose
+ *  insets are all zero — the two spellings of "uncropped" that a hand-edited or
+ *  round-tripped document can produce. */
+export function hasCrop(t: Transform): boolean {
+  const c = cropInsets(t)
+  return c.top > 0 || c.right > 0 || c.bottom > 0 || c.left > 0
+}
 
-const MIN_SCALE = 0.1
-const MAX_SCALE = 10
+/** Scale bounds. Exported so the inspector's numeric field clamps to exactly
+ *  what `applyScale` does — a field with its own limits would let a typed value
+ *  reach a scale the corner handles refuse. */
+export const MIN_SCALE = 0.1
+export const MAX_SCALE = 10
 /** Rotation lands on a right angle when within this many degrees of one. */
 const SNAP_DEG = 4
 /** How close (px) a drag must get to a snap target before it engages — shared
@@ -124,7 +134,7 @@ export function placeRect(
 }
 
 /**
- * Where the media lands on a 16:9 canvas of the given pixel size, given the
+ * Where the media lands on a canvas of the given pixel size, given the
  * transform. Consumed identically by preview and export. Contain-fit, then
  * `placeRect`.
  */
@@ -486,4 +496,72 @@ export function applyRotation(
     ...t,
     rotationDeg: Math.abs(deg - nearest) <= SNAP_DEG ? nearest : deg,
   }
+}
+
+// ── Framing: the Fit / Fill / Reset-crop commands ────────────────────────────
+// Pure, and here rather than in a new module: they are placement math, and
+// `placeRect` is the only placement path.
+
+/**
+ * Drop the crop entirely.
+ *
+ * ABSENT, not zeroed: `cropInsets` reads absent as `NO_CROP`, and an absent key
+ * is how an uncropped document has always serialized — so a cleared crop
+ * round-trips through JSON identically to one that was never set.
+ */
+export function clearCrop(t: Transform): Transform {
+  if (!hasCrop(t)) return t
+  const next = { ...t }
+  delete next.crop
+  return next
+}
+
+/**
+ * The scale at which the media COVERS the canvas — no letterboxing; the frame
+ * crops the overflow instead. The CSS `object-fit: cover` of this module.
+ *
+ * The rotation is handled by rotating the CANVAS into the media's own frame,
+ * NOT by bounding the rotated media in canvas space. Those are different
+ * questions and only the first one is "cover": a 45°-tilted box has a bounding
+ * box far larger than itself, so an AABB test says it already covers the canvas
+ * while its corners are in fact cut off. Rotating the canvas the other way asks
+ * the right thing — how big an axis-aligned box must be to contain the tilted
+ * frame — and at 0° it degenerates to the plain `max(cw / fitW, ch / fitH)`.
+ *
+ * Crop-agnostic: this measures the placed box, not the visible sub-rect.
+ */
+export function coverScale(
+  t: Transform,
+  mediaAspect: number,
+  canvasW: number,
+  canvasH: number,
+): number {
+  const fit = containFit(mediaAspect, canvasW, canvasH)
+  // A degenerate aspect (0, Infinity, NaN) must not hand back NaN scale.
+  if (!(fit.w > 0) || !(fit.h > 0)) return t.scale
+  const rad = (t.rotationDeg * Math.PI) / 180
+  const cos = Math.abs(Math.cos(rad))
+  const sin = Math.abs(Math.sin(rad))
+  // The canvas's extent measured along the media's own axes.
+  const needW = canvasW * cos + canvasH * sin
+  const needH = canvasW * sin + canvasH * cos
+  return clamp(Math.max(needW / fit.w, needH / fit.h), MIN_SCALE, MAX_SCALE)
+}
+
+/** Contain-fit and centered — the whole frame visible, letterboxed if it must
+ *  be. Rotation is the user's framing choice and is KEPT; crop is cleared,
+ *  since a crop of a fitted box would leave it both letterboxed and clipped. */
+export function fitTransform(t: Transform): Transform {
+  return clearCrop({ ...t, scale: 1, tx: 0, ty: 0 })
+}
+
+/** Fill the frame edge to edge, centered, overflow cropped by the canvas. */
+export function fillTransform(
+  t: Transform,
+  mediaAspect: number,
+  canvasW: number,
+  canvasH: number,
+): Transform {
+  const bare = fitTransform(t)
+  return { ...bare, scale: coverScale(bare, mediaAspect, canvasW, canvasH) }
 }

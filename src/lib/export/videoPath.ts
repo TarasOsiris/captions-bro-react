@@ -2,33 +2,47 @@
 // mediabunny's Conversion.
 //
 // Two things here are load-bearing and must survive any refactor:
-//  1. `audio: { codec: 'aac' }` with NO forceTranscode — an AAC source is
-//     PACKET-COPIED, so the export keeps its audio even where there is no AAC
-//     encoder (Firefox). Falling back to the timeline compositor would export
-//     silent there, which is why planExport keeps captions on this path.
+//  1. At full volume the audio options are `{ codec: 'aac' }` with NO
+//     forceTranscode — an AAC source is PACKET-COPIED, so the export keeps its
+//     audio even where there is no AAC encoder (Firefox). Falling back to the
+//     timeline compositor would export silent there, which is why planExport
+//     keeps captions on this path. A clip the user turned DOWN cannot be
+//     packet-copied (the gain would be ignored); see ./audioFast for the
+//     three-mode resolution and why it is not a blanket transcode.
 //  2. The `process` hook is SYNCHRONOUS — it cannot await, so every font must
 //     be resolved before `Conversion.init`.
 
 import { drawScene } from '@/lib/render/compositor'
-import { liveTextItems, videoSampleSource } from '@/lib/render/sceneItems'
+import {
+  liveTextItems,
+  mediaDrawItem,
+  videoSampleSource,
+} from '@/lib/render/sceneItems'
 import { ensureExportFonts } from '@/lib/text/fontLoader'
 import { IDENTITY } from '@/lib/transform'
+import { applyGain, fastAudioMode } from './audioFast'
 import { CancelToken, toHandle } from './cancel'
 import { makeOutputSurface } from './canvas'
 import { ExportInvalidFileError } from './errors'
 import { encodeFraction } from './progress'
 import { classifyDiscardedTracks, makeResult } from './result'
 import type { DrawItem } from '@/lib/render/compositor'
+import type { MediaLayer } from '@/lib/render/sceneItems'
 import type { ExportHandle, ExportResult } from './types'
 import type { CanvasSettings, Clip } from '@/lib/model/types'
-import type { Transform } from '@/lib/transform'
 
 export function exportVideo(
   file: File,
   opts: {
     canvas: CanvasSettings
     fileName: string
-    transform?: Transform
+    /** The media clip's visual layer. A `Clip` satisfies it structurally; the
+     *  `process` hook below builds its DrawItem through the same
+     *  `mediaDrawItem` the scene walk uses, so the two cannot drift. */
+    media?: MediaLayer
+    /** The clip's audio levels. Deliberately separate from `media`, which is
+     *  the VISUAL layer — see ./audioFast for what each level costs. */
+    audio?: Pick<Clip, 'volume' | 'muted'>
     onProgress?: (fraction: number) => void
     /** Text clips to burn over every frame, in draw order. */
     overlays?: Clip[]
@@ -36,12 +50,14 @@ export function exportVideo(
      *  requires the media clip to start at 0 with no trim; passed explicitly so
      *  relaxing that precondition later can't silently desync the overlays. */
     timeOffset?: number
-    /** Whether the SOURCE had audio, for the `silent` verdict. */
+    /** Whether the project INTENDS audio (`intendsAudio`), for the `silent`
+     *  verdict — not merely whether the source has an audio track. */
     hasAudio?: boolean
   },
 ): ExportHandle {
   const token = new CancelToken()
-  const transform = opts.transform ?? IDENTITY
+  const media: MediaLayer = opts.media ?? { transform: IDENTITY }
+  const audioMode = fastAudioMode(opts.audio ?? {})
   const overlays = opts.overlays ?? []
   const timeOffset = opts.timeOffset ?? 0
 
@@ -88,7 +104,7 @@ export function exportVideo(
             // a rounding step past the clip's stored duration, and a liveness
             // check here would black out the tail of the video.
             const items: DrawItem[] = [
-              { transform, source: videoSampleSource(sample) },
+              mediaDrawItem(media, videoSampleSource(sample)),
             ]
             if (overlays.length > 0) {
               items.push(
@@ -108,8 +124,40 @@ export function exportVideo(
           processedWidth: out.width,
           processedHeight: out.height,
         },
-        // No `forceTranscode` on audio — see the packet-copy note in the header.
-        audio: { codec: 'aac' },
+        // No `forceTranscode` on audio — see the packet-copy note in the
+        // header. `copy` must stay BYTE-IDENTICAL to `{ codec: 'aac' }` or
+        // every Firefox export loses its sound.
+        audio:
+          audioMode.kind === 'discard'
+            ? { discard: true }
+            : audioMode.kind === 'gain'
+              ? {
+                  codec: 'aac',
+                  // Setting `process` implies a decode → encode; that cost is
+                  // only paid when the user actually moved the slider.
+                  process: (sample) => {
+                    const format = 'f32' as const
+                    const bytes = sample.allocationSize({
+                      planeIndex: 0,
+                      format,
+                    })
+                    const pcm = new Float32Array(
+                      bytes / Float32Array.BYTES_PER_ELEMENT,
+                    )
+                    sample.copyTo(pcm, { planeIndex: 0, format })
+                    applyGain(pcm, audioMode.gain)
+                    // The input sample is NOT closed here — the conversion owns
+                    // its lifecycle, exactly as in the video hook above.
+                    return new mb.AudioSample({
+                      data: pcm,
+                      format,
+                      numberOfChannels: sample.numberOfChannels,
+                      sampleRate: sample.sampleRate,
+                      timestamp: sample.timestamp,
+                    })
+                  },
+                }
+              : { codec: 'aac' },
       })
     } catch (err) {
       if (err instanceof ExportInvalidFileError) throw err
@@ -145,7 +193,9 @@ export function exportVideo(
       buffer: output.target.buffer,
       fileName: opts.fileName,
       discardedTracks,
-      // The source had audio but every audio track was dropped.
+      // The source had audio the user WANTED, but every audio track was
+      // dropped. `hasAudio` is the caller's `intendsAudio`, so a clip the user
+      // muted never reports as a failure — silence was the request.
       silent:
         (opts.hasAudio ?? false) &&
         discardedTracks.some((t) => t.type === 'audio'),

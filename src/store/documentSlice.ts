@@ -13,6 +13,7 @@ import { clamp } from '@/lib/math'
 import { forkHistory, touchDocument } from './touch'
 import type { WritableDraft } from 'immer'
 import type {
+  CanvasSettings,
   Clip,
   MediaAsset,
   Project,
@@ -121,11 +122,34 @@ export interface DocumentSlice {
     id: string,
     next: { start: number; trimIn: number; duration: number },
   ) => void
+  /** Change the output canvas (size, aspect, background).
+   *
+   *  Deliberately does NOT touch clip transforms: every field of a `Transform`
+   *  is a FRACTION of the canvas, so `placeRect` re-frames each clip correctly
+   *  by construction. Rewriting them would be a second placement path (which
+   *  this codebase forbids) and would be LOSSY — 16:9 → 9:16 → 16:9 has to
+   *  return the exact framing the user tuned. The ergonomic answer to "my clip
+   *  is letterboxed now" is the inspector's explicit per-clip Fill button,
+   *  which is one undo entry and reversible. */
+  setCanvas: (canvas: CanvasSettings) => void
   updateClip: (id: string, patch: Partial<Clip>) => void
   setClipTransform: (id: string, transform: Transform) => void
+  /** Remove clips as ONE edit — a single undo entry however many go. Cut and
+   *  (later) multi-delete need that atomicity; `removeClip` is this with one id.
+   *
+   *  The magnetic track closes the gap by construction (`detachClip` re-packs),
+   *  so there is no separate "close gap" command; a free lane has no gap
+   *  concept, so its siblings stay put. */
+  removeClips: (ids: string[]) => void
   removeClip: (id: string) => void
-  /** Split the clip at project time `atTime` into two adjacent clips. */
-  splitClip: (id: string, atTime: number) => void
+  /** Split the clip at project time `atTime` into two adjacent clips. Returns
+   *  both halves' ids so the caller can select one (CapCut selects the RIGHT
+   *  half — you cut, then keep working forward), or null if the cut fell
+   *  outside the clip. */
+  splitClip: (
+    id: string,
+    atTime: number,
+  ) => { leftId: string; rightId: string } | null
   /** Copy the clip, placed immediately after it on the same track. */
   duplicateClip: (id: string) => string | null
 }
@@ -301,6 +325,11 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set, get) => {
         }
       }),
 
+    setCanvas: (canvas) =>
+      mutate((s) => {
+        s.project.canvas = canvas
+      }),
+
     updateClip: (id, patch) =>
       mutate((s) => {
         for (const track of s.project.tracks) {
@@ -337,19 +366,28 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set, get) => {
         }
       }),
 
-    removeClip: (id) =>
+    removeClips: (ids) =>
       mutate((s) => {
-        for (const track of s.project.tracks) {
-          const i = track.clips.findIndex((c) => c.id === id)
-          if (i >= 0) {
-            track.clips.splice(i, 1)
+        for (const id of ids) {
+          for (const track of s.project.tracks) {
+            const clip = track.clips.find((c) => c.id === id)
+            if (!clip) continue
+            // `detachClip`, not a bare splice: a magnetic track must close the
+            // gap, or "gapless" stops being true the first time a middle clip
+            // is deleted. A free lane is exempt inside `repackTrack`.
+            detachClip(track, clip)
             pruneEmptyOverlayTrack(s.project, track)
-            return
+            break
           }
         }
       }),
 
-    splitClip: (id, atTime) =>
+    removeClip: (id) => {
+      get().removeClips([id])
+    },
+
+    splitClip: (id, atTime) => {
+      let halves: { leftId: string; rightId: string } | null = null
       mutate((s) => {
         for (const track of s.project.tracks) {
           const i = track.clips.findIndex((c) => c.id === id)
@@ -372,9 +410,12 @@ export const createDocumentSlice: ImmerSlice<DocumentSlice> = (set, get) => {
           })
           // Both halves carry explicit starts, so no re-pack is needed either way.
           track.clips.splice(i, 1, left, right)
+          halves = { leftId: left.id, rightId: right.id }
           return
         }
-      }),
+      })
+      return halves
+    },
 
     duplicateClip: (id) => {
       let newId: string | null = null

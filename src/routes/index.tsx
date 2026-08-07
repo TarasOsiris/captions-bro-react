@@ -8,6 +8,7 @@ import { useExport } from '@/hooks/useExport'
 import { useMediaImport } from '@/hooks/useMediaImport'
 import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
+import { useClipCommands } from '@/hooks/useClipCommands'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { useFontLoader } from '@/hooks/useFontLoader'
 import { useLaunchFiles } from '@/hooks/useLaunchFiles'
@@ -43,9 +44,13 @@ function Editor() {
   const { importFile } = useMediaImport()
   const { insertAssetAtTime } = useClipInsert()
   const { startExport, cancelExport, closeExport, getResultBlob } = useExport()
+  // ONE ClipCommands instance for the whole editor; the Timeline holds its own
+  // (the callbacks are stable and stateless, so a second instance is free).
+  const clipCommands = useClipCommands()
   useEditorKeyboard({
     togglePlay,
     seek,
+    commands: clipCommands,
     enabled: exportPhase === 'idle',
   })
   const { hydrated } = usePersistence()

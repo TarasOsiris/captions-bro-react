@@ -157,6 +157,26 @@ export function insertionIndex(
   return index
 }
 
+/** The clip live at `t` on a track, or null. Half-open, so at a packed boundary
+ *  the LATER clip wins — the same rule as `clipIsLiveAt`, which is what keeps
+ *  split-at-the-playhead agreeing with what the preview is showing. */
+export function clipAtTime(track: Track, t: number): Clip | null {
+  return track.clips.find((c) => clipIsLiveAt(c, t)) ?? null
+}
+
+/** TIME of the boundary before `index` on a packed track — where an inserted or
+ *  moved clip's left edge will land. The inverse of `insertionIndex`, and here
+ *  rather than in the timeline layer because it is document geometry: the
+ *  caller converts to px with `timeToX` at whatever scale it is rendering. */
+export function boundaryTime(
+  clips: ReadonlyArray<{ duration: number }>,
+  index: number,
+): number {
+  let t = 0
+  for (let i = 0; i < index && i < clips.length; i++) t += clips[i].duration
+  return t
+}
+
 /** Resolve an edge-trim drag into a clip's new `{ trimIn, duration }`. `deltaSec` is
  *  the signed distance the dragged edge moved. Clamped so the clip stays
  *  ≥ `minDuration`, `trimIn` ≥ 0, and (for a bounded source) the out-point stays
@@ -199,6 +219,41 @@ export function freeTrimWindow(
     trimIn: next.trimIn,
     duration: next.duration,
   }
+}
+
+/** How far a clip's source can be trimmed into: a video is bounded by its
+ *  intrinsic length, a still has no source timeline and so is unbounded.
+ *  Shared by the trim DRAG and the trim-to-playhead command, which otherwise
+ *  each spelled the rule out and could disagree about a still. */
+export function clipSourceLen(project: Project, clip: Clip): number {
+  if (clip.type !== 'video') return Number.POSITIVE_INFINITY
+  return assetOf(project, clip)?.durationSec ?? Number.POSITIVE_INFINITY
+}
+
+/**
+ * The window a "trim this edge to the playhead" command commits — the keyboard
+ * equivalent of dragging that edge onto time `t`. Null when `t` is not strictly
+ * inside the clip (there is nothing to trim away).
+ *
+ * Expressed as a DELTA through `resolveTrim` + `freeTrimWindow` rather than as
+ * fresh arithmetic, so it inherits every clamp the drag already has (source
+ * length, minimum duration, trimIn ≥ 0) and cannot drift from it.
+ */
+export function trimToTimeWindow(
+  edge: 'left' | 'right',
+  clip: Clip,
+  t: number,
+  sourceLen: number,
+  minDuration: number,
+): { start: number; trimIn: number; duration: number } | null {
+  const end = clip.start + clip.duration
+  if (t <= clip.start || t >= end) return null
+  const deltaSec = edge === 'left' ? t - clip.start : t - end
+  return freeTrimWindow(
+    edge,
+    clip,
+    resolveTrim(edge, clip, deltaSec, sourceLen, minDuration),
+  )
 }
 
 /** Total timeline duration = the furthest clip end across all tracks. */

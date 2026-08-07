@@ -5,7 +5,8 @@ captions into videos on-device (Apple Speech transcription → styled overlay �
 AVFoundation H.264 export). This is the browser port.
 
 **Current scope:** import a video **or image** → add styled **text overlays** →
-preview on a 16:9 canvas → export a re-encoded **H.264 + AAC MP4**, entirely
+preview on a 16:9 / 9:16 / 1:1 / 4:5 canvas → export a re-encoded
+**H.264 + AAC MP4**, entirely
 client-side via WebCodecs. Images become fixed-length still-frame clips (like the
 iOS app's still→video). No transcription yet — but the burn-in it needs is done,
 so it only has to generate text clips (see "Text overlays").
@@ -21,7 +22,8 @@ so it only has to generate text clips (see "Text overlays").
 - **Tailwind CSS v4** (`@tailwindcss/vite`, tokens in `src/styles.css` via `@theme`)
 - **mediabunny** — in-browser demux/decode/encode over WebCodecs
 - **Zustand + immer** — the editor store (`src/store/`), sliced into
-  document/playback/selection/export/ui; read with atomic selectors, read
+  document/history/playback/selection/export/ui/clipboard; read with atomic
+  selectors, read
   imperatively in rAF/async via `useEditorStore.getState()`
 - No backend logic, no database (persistence is client-side: localStorage +
   IndexedDB, planned in `src/lib/persistence/`)
@@ -29,8 +31,12 @@ so it only has to generate text clips (see "Text overlays").
 ### Layout
 
 - `src/lib/model/` — the domain: `Project → Track[] → Clip[]` tree + a
-  `MediaAsset` registry (`types.ts`), pure `factories.ts`/`selectors.ts`, and
-  `scene.ts` (`resolveScene(project, t)` → the clips live at a time).
+  `MediaAsset` registry (`types.ts`), pure `factories.ts`/`selectors.ts`,
+  `scene.ts` (`resolveScene(project, t)` → the clips live at a time), and the
+  per-property semantics modules — `audio.ts` (`clipGain`, `clipCarriesAudio`,
+  `intendsAudio`), `visual.ts` (`clipOpacity`), `inspector.ts` (which inspector
+  a selection gets). Each exists so a rule the preview and the export both need
+  is written ONCE.
 - `src/lib/render/compositor.ts` — `drawScene`, the ONE renderer (see below).
 - `src/lib/transform.ts` — placement math (shared geometry). `placeRect` is the
   primitive: it places a source of a given NATURAL size (canvas px). `mediaRect`
@@ -62,8 +68,13 @@ so it only has to generate text clips (see "Text overlays").
   (ALL shortcuts incl. Cmd+Z — undo/redo live in the store's history slice,
   `src/store/historySlice.ts`), `usePersistence`,
   `useFontLoader` (keeps the document's faces loaded across reload/undo),
-  `useTextStyle` (per-field atomic selectors + rAF-throttled writes),
-  `usePanelResize` (the two draggable side columns),
+  `useLiveField` (THE per-field atomic-selector + rAF-throttled-write +
+  one-undo-snapshot-per-session machinery) with its two wrappers `useTextStyle`
+  and `useClipFields`, `useClipCommands` (THE clip commands — split, trim to
+  playhead, duplicate, delete, cut/copy/paste — shared by the toolbar, the
+  mobile pill and the keyboard, plus the `can` predicates their disabled states
+  read), `usePanelResize` (the two draggable side columns),
+  `useIsomorphicLayoutEffect` (a layout effect that doesn't warn under SSR),
   `useServiceWorker` / `useLaunchFiles` / `useInstallPrompt` (see "PWA").
 - `src/components/editor/` — the store-connected shell (TopBar, MediaPanel,
   PreviewStage, Timeline, InspectorPanel, MobileDock, ExportScreen);
@@ -109,9 +120,14 @@ All video processing is **client-side**. `src/lib/export.ts` is the single seam:
   SSR/Nitro server bundle's evaluation path (the route is server-rendered).
 - `exportVideo(file)` runs a real decode → encode: `Conversion.init` with
   `video: { codec: 'avc', forceTranscode: true }` (a genuine re-encode even for
-  already-H.264 input) and `audio: { codec: 'aac' }` (no `forceTranscode`, so AAC
-  sources packet-copy and export still works where there's no AAC encoder, e.g.
-  Firefox). Output is MP4 with `fastStart: 'in-memory'` (moov atom at the front).
+  already-H.264 input). Audio is resolved by the pure `fastAudioMode`
+  (`export/audioFast.ts`): at full volume it stays `{ codec: 'aac' }` with no
+  `forceTranscode`, so AAC sources PACKET-COPY and export still works where
+  there's no AAC encoder (e.g. Firefox) — that arm must stay byte-identical; a
+  muted clip becomes `{ discard: true }` (exact silence, no encoder needed); and
+  only a genuine partial volume decodes → scales → re-encodes, via an audio
+  `process` hook. Output is MP4 with `fastStart: 'in-memory'` (moov atom at the
+  front).
 - `exportCapability()` gates the UI (Chromium/Safari 26+ can encode H.264; the
   button is disabled otherwise). It wraps `canExportH264()` and adds user-facing
   remediation copy, which is **platform-aware on purpose**: on iOS every browser
@@ -134,7 +150,8 @@ preview (`PreviewStage`) draws it onto a `<canvas>` on a rAF loop, using hidden
 calls the same `drawScene` per frame (mediabunny's `video.process` hook for
 video, `CanvasSource` for stills). Geometry comes from `placeRect`
 (`src/lib/transform.ts`); the output canvas is the project's `canvas`
-(`project.canvas`, 16:9). Because both paths call one function, a new visual
+(`project.canvas`, whose ratio the user picks). Because both paths call one
+function, a new visual
 feature is written once (as a `DrawItem`/layer) and cannot drift between preview
 and export. The selection box/handles are a DOM overlay positioned by the same
 `placeRect` — chrome, never composited, so never exported.
@@ -276,9 +293,13 @@ the two edges cannot drift apart. The rules that keep it cheap and safe:
   focus explicitly on pointerdown (the `preventDefault` that stops text
   selection also stops focus), and it CONSUMES every key `useEditorKeyboard`
   handles — that listener is on `window` and only skips INPUT/TEXTAREA, so an
-  unconsumed Backspace on a focused splitter deletes the selected clip. Tab and
-  Cmd+Z still pass through. ←/→ nudge, Home/End go to the bounds, Enter and
-  double-click reset.
+  unconsumed Backspace on a focused splitter deletes the selected clip, and an
+  unconsumed `S` splits it. The list is `EDITOR_BARE_KEY_CODES`, exported from
+  `useEditorKeyboard` and matched on `event.code`: restating it here as `e.key`
+  characters silently disagreed on every non-QWERTY layout (on Dvorak the
+  physical `KeyS` reports `key: 'o'`). Tab and the Cmd-modified shortcuts still
+  pass through. ←/→ nudge, Home/End go to the bounds, Enter and double-click
+  reset.
 - Each handle is the DOM child adjacent to the edge it sits on (last for the
   media column, first for the inspector), so tab order matches the eye.
 - The bins reflow by themselves: `repeat(auto-fill,minmax(4.75rem,1fr))` turns a
@@ -300,7 +321,9 @@ phone clears every width breakpoint and still has no vertical room.
 ### The PreviewStage container-query contract
 
 `PreviewStage.tsx`'s frame is `h-[min(100cqh,56.25cqw)] w-[min(100cqw,177.778cqh)]`
-— a two-axis 16:9 contain fit against the `[container-type:size]` section. Four
+— a two-axis contain fit against the `[container-type:size]` section, with the
+two numbers interpolated from `canvasAspect(project.canvas)` (the `min()` pair on
+each axis is the contract; only the constants change). Four
 invariants:
 
 1. **The middle row in `routes/index.tsx` must stay a row-direction `flex` with
@@ -317,6 +340,64 @@ invariants:
 
 Verify by _measuring_ computed `width/height` at 320/375/430/768/1024/1440 — it
 must be 1.7778 at every one. Don't eyeball it.
+
+### The output canvas is a per-project choice
+
+`CANVAS_ASPECT = 16/9` is gone. The ratio is DERIVED from `project.canvas` via
+`canvasAspect` (`lib/model/canvas.ts`), because 9:16 and 1:1 are the point of a
+social video editor — and a global constant living alongside a per-project value
+is the `19rem` drift failure mode waiting to happen. Four rules:
+
+- **Preset dimensions are EVEN INTEGERS, written out, never derived from a float
+  ratio.** H.264 needs even dimensions and `outputCanvas` rounds to get them —
+  but rounding a derived size changes the ratio: `1080 * 9/16` is 607.5, which
+  becomes 606 and puts the export 0.25% off what the preview composed at.
+  `canvas.test.ts` pins that `outputCanvas` is the identity on every preset.
+- **`setCanvas` does NOT rewrite clip transforms.** Every field of a `Transform`
+  is a fraction of the canvas, so `placeRect` re-frames each clip correctly by
+  construction. Rewriting them would be a second placement path, and it would be
+  LOSSY — 16:9 → 9:16 → 16:9 has to return the exact framing the user tuned
+  (`documentSlice.test.ts` pins that round trip). The answer to "my clip is
+  letterboxed now" is the inspector's explicit per-clip **Fill**, which is one
+  undo entry and reversible.
+- **No migration.** `CanvasSettings` was always persisted verbatim and the aspect
+  is derived, so per `migrations.ts`'s own rule this is hydrate-time
+  normalization: `normalizeCanvas` in `hydrate.ts`. `CURRENT_VERSION` stays 2.
+  That also closed an older hole — `projectStore` validated `tracks` and `assets`
+  but never the canvas, so a corrupt one reached `drawScene` as NaN geometry.
+- **Text does not rescale either**, for the same fractional reason: `fontSize`
+  stays a fraction of canvas HEIGHT and `boxWidth` a fraction of WIDTH. Accept
+  the consequence — going 1920×1080 → 1080×1920 grows glyph pixels 1.78× while
+  nearly halving the wrap width, so a one-line caption can become three. Making
+  `fontSize` relative to the SHORT side would fix that and is backward-compatible
+  (every 16:9 document has height as its short side), but it changes a stated
+  invariant and belongs in its own commit.
+
+The panel lives in the RAIL (`Panel = … | 'canvas'`), not the inspector: the rail
+is served by one component at both layouts, whereas the mobile inspector sheet is
+only reachable with a clip selected — so a project-level setting would be
+unreachable exactly where 9:16 matters most.
+
+### The clip context menu
+
+`ClipContextMenu` is a Radix **Popover** over a virtual 1×1 `fixed` anchor, not
+`@radix-ui/react-context-menu`: no new dependency, and `ui/popover.tsx` already
+solves the hazard this needs — its outside-press must not reach PreviewStage's
+frame handler, which would deselect the clip the menu is acting on. Three ways in,
+one definition (the items ARE `useClipCommands`):
+
+1. `onContextMenu` on the ClipBox (mouse). `isPrimaryPointer` already stops a
+   right-press from starting a drag.
+2. The `⋯` button in the mobile pill — the DISCOVERABLE touch path, and the
+   reason the menu is shippable on touch at all. An affordance reachable only by
+   an invisible gesture doesn't count.
+3. Long-press, implemented INSIDE the existing `clipDragRef` bookkeeping (a timer
+   armed on pointerdown for non-mouse, cleared past `DRAG_THRESHOLD` and by the
+   one `releaseClipDrag` teardown). A parallel gesture would race the drag for
+   the same pointer.
+
+`onOpenAutoFocus` is prevented: on touch the press that opened the menu is still
+in flight, and Radix focusing the content would dismiss on that same press.
 
 ### Touch-action is per-surface, never global
 
@@ -351,6 +432,52 @@ two-axis: `resolveClipDrop` classifies the pointer against the live lane rects
 into main / lane / seam (between lanes, above the stack — a NEW lane), the ONE
 resolver both the indicator and the commit use. Same-lane drags clamp flush
 against siblings; cross-lane drops onto occupied time stack a new lane instead.
+
+### Timeline scale — zoom is a parameter, not a constant
+
+`TIMELINE_PX_PER_SEC` is gone. The scale is `uiSlice.pxPerSec`, and every
+px↔time function takes it EXPLICITLY (`timeToX`, `xToTime`, `tickStep`,
+`tickModel` in `lib/timeline/ruler.ts`) with no default — a default is how a
+stale call site survives the switch while still measuring at the old fixed
+scale, silently, and only visibly once you zoom. The bounds and the scroll
+arithmetic are pure in `lib/timeline/zoom.ts` (`clampZoom`, `zoomBy`, `fitZoom`,
+`anchorScrollLeft`, `zoomAnchorTime`, `snapToleranceSec`), all unit-tested.
+
+Five rules carry it:
+
+- **Zoom is SESSION state, in `uiSlice` — never in `Project`.** In the document
+  it would be captured by every undo snapshot (so Cmd+Z would un-zoom), saved
+  into the file, and would dirty the autosave on every wheel tick. It is
+  deliberately not persisted either: restoring a scale without its scroll
+  offset is disorienting, and the scale was chosen for a different project's
+  duration.
+- **The pivot is captured by the COMMAND, restored before PAINT.** Once
+  `pxPerSec` has changed the old scale is gone and the anchor can no longer be
+  computed, so `applyZoom` stores it in a ref first; a `useIsomorphicLayoutEffect`
+  then writes `scrollLeft` before the browser paints. In a plain effect the
+  timeline visibly lurches sideways for one frame on every zoom step.
+- **Playhead-follow is mandatory, not a nicety.** At 500px/s the playhead leaves
+  a laptop viewport in about two seconds. It is a store subscription writing
+  `scrollLeft` imperatively, rAF-coalesced, suppressed while any gesture is live
+  — and it reads the ResizeObserver's tracked width rather than `clientWidth`,
+  because it runs right after React commits the playhead's `style.left` and a
+  layout read there forces a flush every frame.
+- **The scroll offset lives in `RulerTicks`, not in `Timeline`.** It is the only
+  thing that changes at pointer rate during a plain pan, so holding it in the
+  Timeline's state re-renders every `ClipBox` and both tool rows on every frame
+  of the one gesture a long timeline is made of. The tick window is also
+  quantized to `SCROLL_BUCKET_PX`, so even that row re-renders per bucket of
+  travel rather than per frame.
+- **A zoom re-renders every `ClipBox` by construction** (they all resize), so
+  the wheel handler is rAF-coalesced and one render per frame is the floor —
+  the documented exception to "a continuous edit must not re-render the
+  timeline", which is about document mutation.
+
+Filmstrip sampling is decoupled from it: `FILMSTRIP_SEC_PER_FRAME` in
+`thumbs.ts` is a rate in SECONDS, since the strip is generated once at import
+and a px-derived rate would bake whatever zoom was active into the asset. The
+renderer caps `tileCount` at the strip's length and stretches the tiles past
+that, rather than repeating frames in a stutter.
 
 ### Pointer gestures are exclusive and cancel-safe
 
@@ -448,7 +575,8 @@ iPad + trackpad).
   bearing: `ClipBox` is `memo`'d (which needs every handler prop to be a stable
   `useCallback`, hence `selectClipAt` reading `currentTime` via `getState()`
   rather than closing over it); inspector controls subscribe per-FIELD through
-  `useTextStyleField`; and writes are rAF-throttled. Undo takes ONE snapshot per
+  `useLiveField` (via `useTextStyleField` / `useClipFields`); and writes are
+  rAF-throttled. Undo takes ONE snapshot per
   editing session — `beginEditSession()` on the first write of a drag,
   `endEditSession()` on commit/blur (the store's history slice; never per frame
   or keystroke). Every document mutation flows through `documentSlice`'s
@@ -459,10 +587,11 @@ iPad + trackpad).
 
 ### Known mobile limitations (deliberate, not oversights)
 
-- **No timeline zoom.** `TIMELINE_PX_PER_SEC = 40` is a constant, so a 3-minute
-  project is 7200px — ~18 viewport-widths of panning on a phone. This is why the
-  ±1s nudge buttons are load-bearing rather than a nicety. Making it dynamic
-  means threading `pxPerSec` through `ClipBox` and decoupling filmstrip sampling.
+- **No pinch-to-zoom on the timeline.** Zoom itself exists (see "Timeline
+  scale"), but reaching it by pinch would mean dropping `pinch-zoom` from the
+  scrub surface's `touch-action`, which is kept deliberately so the PAGE stays
+  zoomable for accessibility. The −/+/Fit buttons and ⌘+/−/0 are the whole
+  story; a pinch would need its own CLAUDE.md amendment.
 - **No pinch-to-scale / two-finger rotate** on the preview. Reachable via the
   corner handles and rotate button; pinch needs centroid-preserving geometry in
   `transform.ts` (with tests), which is a feature, not a fix.

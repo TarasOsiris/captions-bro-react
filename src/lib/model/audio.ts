@@ -8,10 +8,25 @@ import { clamp } from '@/lib/math'
 import { allClips, assetOf } from './selectors'
 import type { Clip, Project } from './types'
 
+/** Which clip types can carry sound at all. One rule, so the export mixer, the
+ *  silent verdict and the inspector's Audio section cannot disagree about
+ *  whether a clip deserves a volume control. */
+export function clipCarriesAudio(clip: Pick<Clip, 'type'>): boolean {
+  return clip.type === 'video' || clip.type === 'audio'
+}
+
 /** Effective gain for a clip: muted is silence, otherwise volume in [0,1]. */
 export function clipGain(clip: Pick<Clip, 'volume' | 'muted'>): number {
   if (clip.muted) return 0
   return clamp(clip.volume ?? 1, 0, 1)
+}
+
+/** Does the project ask for ANY sound? False when every audio-carrying clip is
+ *  muted or at zero — silence the user chose, which the export must not report
+ *  as a problem. Asked by BOTH export paths, so the composite path can't warn
+ *  about a deliberate mute that the fast path correctly stays quiet about. */
+export function intendsAudio(project: Project): boolean {
+  return allClips(project).some((c) => clipCarriesAudio(c) && clipGain(c) > 0)
 }
 
 /** Clips worth decoding for audio: audible, and backed by an asset. */

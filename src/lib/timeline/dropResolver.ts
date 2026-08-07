@@ -11,9 +11,8 @@
 // (the only part that touches the document), `classifyLaneZone` is pure over
 // them, and the resolvers below are pure over the zone.
 
-import { insertionIndex } from '@/lib/model/selectors'
+import { boundaryTime, insertionIndex } from '@/lib/model/selectors'
 import { laneHasRoom, resolveLaneStart } from '@/lib/model/lanes'
-import { boundaryX } from './ruler'
 import type { Clip, Track } from '@/lib/model/types'
 
 /** Half-gap (px) the seam indicator sits above a lane. */
@@ -28,7 +27,7 @@ export const SEAM_OFFSET_PX = 5
  *   `belowTrackId` (array order is z-order, so above = later in the array).
  */
 export type DropTarget =
-  | { kind: 'main'; trackId: string; index: number; caretX: number }
+  | { kind: 'main'; trackId: string; index: number; caretTime: number }
   | { kind: 'lane'; trackId: string; start: number; duration: number }
   | { kind: 'seam'; belowTrackId: string; seamY: number; start: number }
 
@@ -133,7 +132,7 @@ export function resolveClipDrop(opts: {
       kind: 'main',
       trackId: zone.track.id,
       index,
-      caretX: boundaryX(others, index),
+      caretTime: boundaryTime(others, index),
     }
   }
   if (zone.kind === 'seam') return { ...zone, start: snappedStart }
@@ -175,7 +174,7 @@ export function resolveAssetDrop(opts: {
       kind: 'main',
       trackId: mainTrack.id,
       index,
-      caretX: boundaryX(mainTrack.clips, index),
+      caretTime: boundaryTime(mainTrack.clips, index),
     }
   }
   if (zone.kind === 'seam') return { ...zone, start: snappedStart }
@@ -198,7 +197,7 @@ export function sameDropTarget(
         b.kind === 'main' &&
         a.trackId === b.trackId &&
         a.index === b.index &&
-        a.caretX === b.caretX
+        a.caretTime === b.caretTime
       )
     case 'lane':
       return (

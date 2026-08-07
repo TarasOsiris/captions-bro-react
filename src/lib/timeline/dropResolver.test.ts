@@ -119,7 +119,7 @@ describe('resolveClipDrop', () => {
     // With 'a' lifted out, the only remaining boundary before the end is at
     // t=4 (after 'b'), so the caret must be measured on the REMAINING clips.
     expect(target).toMatchObject({ kind: 'main' })
-    if (target.kind === 'main') expect(target.caretX).toBeGreaterThan(0)
+    if (target.kind === 'main') expect(target.caretTime).toBeGreaterThan(0)
   })
 
   it('TEXT over the magnetic track is remapped to a new lane above it', () => {
@@ -256,12 +256,12 @@ describe('sameDropTarget', () => {
         kind: 'main',
         trackId: 'm',
         index: 0,
-        caretX: 24,
+        caretTime: 24,
       }),
     ).toBe(false)
     expect(
       sameDropTarget(
-        { kind: 'main', trackId: 'm', index: 0, caretX: 24 },
+        { kind: 'main', trackId: 'm', index: 0, caretTime: 24 },
         { kind: 'seam', belowTrackId: 'm', seamY: 1, start: 0 },
       ),
     ).toBe(false)

@@ -13,6 +13,7 @@ import { useEffect } from 'react'
 import { useEditorStore } from '@/store/editorStore'
 import { MediaBin, MediaRail } from '@/components/editor/MediaPanel'
 import { TextPresetBin } from '@/components/editor/TextPanel'
+import { CanvasPanel } from '@/components/editor/CanvasPanel'
 import { InspectorBody } from '@/components/editor/inspector/InspectorBody'
 import { MOBILE_PANEL_ID } from '@/components/editor/panelIds'
 import { cn } from '@/lib/utils'
@@ -88,6 +89,8 @@ export function MobileDock({
               setPanel('inspector')
             }}
           />
+        ) : panel === 'canvas' ? (
+          <CanvasPanel />
         ) : panel === 'inspector' ? (
           <InspectorBody variant="sheet" />
         ) : (

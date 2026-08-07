@@ -29,7 +29,7 @@ import { exportImage } from './imagePath'
 import { planExport } from './plan'
 import { exportTimeline } from './timelinePath'
 import { exportVideo } from './videoPath'
-import { hasAudioClips } from '@/lib/model/audio'
+import { intendsAudio } from '@/lib/model/audio'
 import type { ExportHandle } from './types'
 import type { Project } from '@/lib/model/types'
 
@@ -66,7 +66,7 @@ export function exportProject(
       durationSec: plan.clip.duration,
       canvas: project.canvas,
       fileName,
-      transform: plan.clip.transform,
+      media: plan.clip,
       onProgress: opts?.onProgress,
     })
   }
@@ -75,13 +75,14 @@ export function exportProject(
     return exportVideo(project.assets[plan.assetId].file, {
       canvas: project.canvas,
       fileName,
-      transform: plan.clip.transform,
+      media: plan.clip,
+      audio: plan.clip,
       onProgress: opts?.onProgress,
       overlays: plan.overlays,
       // Safe because the plan requires start === 0 && trimIn === 0, so project
       // time is exactly the sample timestamp.
       timeOffset: 0,
-      hasAudio: hasAudioClips(project),
+      hasAudio: intendsAudio(project),
     })
   }
 

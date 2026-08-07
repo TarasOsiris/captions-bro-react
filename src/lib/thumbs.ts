@@ -5,11 +5,20 @@
 const TILE_W = 96
 const TILE_H = 54
 
-// Timeline scale — shared with the Timeline component so the number of frames
-// tracks the fixed on-screen tile density (≈ one frame per TIMELINE_TILE_W px of
-// track). Kept here so the generator and the renderer never drift apart.
-export const TIMELINE_PX_PER_SEC = 40
+/** Width (px) of one filmstrip tile as the Timeline lays it out. */
 export const TIMELINE_TILE_W = 64
+
+/**
+ * How often the strip samples the source, in SECONDS per frame.
+ *
+ * This used to be derived from the timeline's fixed 40px/s (`TILE_W / 40`), but
+ * the strip is generated once at IMPORT time and the timeline scale is now a
+ * user-controlled zoom — so a px-derived rate would bake whatever zoom happened
+ * to be active into the asset. The value is exactly the old quotient, so frame
+ * counts are byte-identical to before (it is the old `TIMELINE_TILE_W / 40`
+ * worked out); the renderer stretches or subsamples the strip it is given.
+ */
+const FILMSTRIP_SEC_PER_FRAME = 1.6
 const MIN_FRAMES = 8
 const MAX_FRAMES = 48
 
@@ -73,13 +82,10 @@ export async function generateFilmstrip(url: string): Promise<string[]> {
   const duration = video.duration
   if (!Number.isFinite(duration) || duration <= 0) return []
 
-  // One frame per ~TIMELINE_TILE_W px of fixed-scale track, clamped.
+  // One frame per FILMSTRIP_SEC_PER_FRAME of source, clamped.
   const count = Math.min(
     MAX_FRAMES,
-    Math.max(
-      MIN_FRAMES,
-      Math.round((duration * TIMELINE_PX_PER_SEC) / TIMELINE_TILE_W),
-    ),
+    Math.max(MIN_FRAMES, Math.round(duration / FILMSTRIP_SEC_PER_FRAME)),
   )
 
   const canvas = document.createElement('canvas')

@@ -21,6 +21,7 @@ import { pickOverlayLane, resolveLaneStart } from '@/lib/model/lanes'
 import {
   DEFAULT_TEXT_DURATION_SEC,
   clipFromAsset,
+  cloneClip,
   createTextClip,
 } from '@/lib/model/factories'
 import { presetStyle } from '@/lib/text/presets'
@@ -129,10 +130,54 @@ export function useClipInsert() {
     [insertAssetVia],
   )
 
+  /**
+   * Insert an ALREADY-BUILT clip at `time` — the paste path.
+   *
+   * Routed through this hook rather than reimplemented in the clipboard so
+   * paste and drop cannot disagree about lane choice or undo. `magnetic` picks
+   * the destination: true takes the boundary nearest `time` on the main track,
+   * exactly as a bin drop does; false picks the lowest overlay lane with room,
+   * else a fresh one on top. The caller decides, because "has an asset" is not
+   * the answer — a picture-in-picture clip copied off a lane belongs back on
+   * one.
+   *
+   * Mints a fresh id, so pasting twice yields two clips rather than a duplicate
+   * id. Returns null when the clip references an asset this document does not
+   * have — the cross-document copy case, where there are no pixels to draw.
+   */
+  const insertClipAtTime = useCallback(
+    (source: Clip, time: number, magnetic: boolean): string | null => {
+      const st = useEditorStore.getState()
+      if (
+        source.assetId != null &&
+        !Object.hasOwn(st.project.assets, source.assetId)
+      ) {
+        return null
+      }
+      const start = Math.max(0, time)
+      const clip = cloneClip(source, { start })
+      st.beginEdit()
+      if (magnetic) {
+        const track = videoTrack(st.project)
+        st.addClipAtIndex(clip, track.id, insertionIndex(track.clips, start))
+      } else {
+        const trackId =
+          pickOverlayLane(st.project, start, clip.duration) ??
+          st.addOverlayTrack()
+        st.addClip(clip, trackId)
+      }
+      finishInsert(clip)
+      if (clip.type === 'text') void ensureFontsForClips([clip])
+      return clip.id
+    },
+    [finishInsert],
+  )
+
   return {
     insertAssetAtTime,
     insertTextAtTime,
     insertAssetOnLane,
     insertAssetOnNewLane,
+    insertClipAtTime,
   }
 }

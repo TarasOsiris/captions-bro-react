@@ -60,6 +60,14 @@ export interface Clip {
   textStyle?: TextStyle
   volume?: number
   muted?: boolean
+  /** media: layer alpha 0…1; absent = 1 (opaque). Read it through
+   *  `clipOpacity` (src/lib/model/visual.ts), never raw.
+   *
+   *  Deliberately on the CLIP, not on `Transform`: `IDENTITY` is spread into
+   *  every clip and persistence round-trips `transform` verbatim, and alpha is a
+   *  compositing property rather than placement geometry. Text clips ignore it
+   *  in favour of the glyph-level `TextStyle.opacity` — see `DrawItem.opacity`. */
+  opacity?: number
 }
 
 export interface Track {

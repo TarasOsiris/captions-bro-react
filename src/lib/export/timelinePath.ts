@@ -11,7 +11,7 @@ import {
 } from '@/lib/render/sceneItems'
 import { resolveScene } from '@/lib/model/scene'
 import { allClips, assetOf, projectDuration } from '@/lib/model/selectors'
-import { hasAudioClips } from '@/lib/model/audio'
+import { intendsAudio } from '@/lib/model/audio'
 import { ensureProjectFonts } from '@/lib/text/fontLoader'
 import { mixTimelineAudio } from './audioMix'
 import { CancelToken, toHandle } from './cancel'
@@ -83,7 +83,7 @@ export function exportTimeline(
       }
 
       // Mix audio ahead of muxing (best-effort; needs an AAC encoder).
-      const hasAudio = hasAudioClips(project)
+      const hasAudio = intendsAudio(project)
       let mixed: AudioBuffer | null = null
       if (hasAudio) {
         try {

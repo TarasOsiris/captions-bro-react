@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Download, Share2, X } from 'lucide-react'
 import { useEditorStore } from '@/store/editorStore'
-import { CANVAS_ASPECT } from '@/lib/transform'
+import { canvasAspect } from '@/lib/model/canvas'
 
 interface ExportScreenProps {
   /** Abort the in-progress export (cancel X while exporting). */
@@ -52,6 +52,8 @@ export function ExportScreen({
   const downloadName = useEditorStore((s) => s.downloadName)
   const silent = useEditorStore((s) => s.exportSilent)
   const done = useEditorStore((s) => s.exportPhase === 'done')
+  // Atomic: a number, so this never re-renders on an unrelated document write.
+  const aspect = useEditorStore((s) => canvasAspect(s.project.canvas))
 
   const stageRef = useRef<HTMLDivElement>(null)
   const [stage, setStage] = useState({ w: 0, h: 0 })
@@ -70,11 +72,11 @@ export function ExportScreen({
     }
   }, [])
 
-  // Fit a 16:9 preview (plus the ring inset) into the measured stage area.
+  // Fit the preview (plus the ring inset) into the measured stage area.
   const availW = Math.max(0, stage.w - PAD * 2 - RING_INSET * 2)
   const availH = Math.max(0, stage.h - PAD * 2 - RING_INSET * 2)
-  const previewW = Math.max(0, Math.min(availW, availH * CANVAS_ASPECT))
-  const previewH = previewW / CANVAS_ASPECT
+  const previewW = Math.max(0, Math.min(availW, availH * aspect))
+  const previewH = previewW / aspect
   const ringW = previewW + RING_INSET * 2
   const ringH = previewH + RING_INSET * 2
   const ringRadius = PREVIEW_RADIUS + RING_INSET

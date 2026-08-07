@@ -9,9 +9,13 @@ import {
   Scissors,
   SkipBack,
   SkipForward,
+  Maximize2,
+  MoreHorizontal,
   SlidersHorizontal,
   Trash2,
   Type,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -22,7 +26,9 @@ import {
 import { useEditorStore } from '@/store/editorStore'
 import {
   assetOf,
+  boundaryTime,
   clipById,
+  clipSourceLen,
   freeTrimWindow,
   projectDuration,
   resolveTrim,
@@ -40,25 +46,41 @@ import {
 } from '@/lib/timeline/dropResolver'
 import {
   TRACK_PAD,
-  boundaryX,
   tickModel,
+  tickStep,
   timeToX,
   xToTime,
 } from '@/lib/timeline/ruler'
+import {
+  DEFAULT_PX_PER_SEC,
+  MAX_PX_PER_SEC,
+  MIN_PX_PER_SEC,
+  ZOOM_STEP,
+  anchorScrollLeft,
+  fitZoom,
+  snapToleranceSec,
+  zoomAnchorTime,
+  zoomBy,
+} from '@/lib/timeline/zoom'
+import { ClipContextMenu } from './ClipContextMenu'
+import { useClipCommands } from '@/hooks/useClipCommands'
 import { useClipInsert } from '@/hooks/useClipInsert'
+import { useIsomorphicLayoutEffect } from '@/hooks/useIsomorphicLayoutEffect'
 import { NUDGE_SEC } from '@/hooks/useEditorKeyboard'
 import { DEFAULT_IMAGE_DURATION_SEC, formatTimecode } from '@/lib/media'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { clamp } from '@/lib/math'
+import { rafThrottle } from '@/lib/raf'
 import { SNAP_PX } from '@/lib/transform'
 import { MEDIA_ASSET_MIME } from '@/lib/dnd'
-import { TIMELINE_PX_PER_SEC, TIMELINE_TILE_W } from '@/lib/thumbs'
+import { TIMELINE_TILE_W } from '@/lib/thumbs'
 import { MIN_CLIP_DURATION } from '@/lib/model/lanes'
 import type {
   DropTarget,
   LaneRect,
   LaneZone,
 } from '@/lib/timeline/dropResolver'
+import type { MenuAt } from './ClipContextMenu'
 import type { Clip, Track } from '@/lib/model/types'
 
 interface TimelineProps {
@@ -77,23 +99,92 @@ const DRAG_THRESHOLD = 4
  *  before a vertical clip drag starts nudging the lanes into view. */
 const EDGE_SCROLL_ZONE = 24
 const EDGE_SCROLL_STEP = 8
+/** Fraction of the viewport kept clear at each edge before playback scrolling
+ *  recentres the playhead. */
+const FOLLOW_MARGIN = 0.15
+/** How long a touch must rest on a clip before the context menu opens. */
+const LONG_PRESS_MS = 500
 
-/** The ruler's tick marks + labels, alone. This row is ~150 absolutely-placed
- *  spans and the Timeline re-renders EVERY FRAME during playback (it
- *  subscribes `currentTime`), so the ticks memoize on the one thing they
- *  depend on — the ruler's width. */
-const RulerTicks = memo(function RulerTicks({ width }: { width: number }) {
+/**
+ * The ruler's tick marks + labels, alone.
+ *
+ * It OWNS the scroll offset it virtualizes against, and that placement is the
+ * whole point: the offset is the only thing in the Timeline that changes at
+ * pointer rate during a plain pan, so holding it in the Timeline's own state
+ * would re-render every ClipBox, both tool rows and the transport on every
+ * frame of a scroll — the one gesture a long timeline is made of. Here, a pan
+ * re-renders this row and nothing else.
+ *
+ * The window is QUANTIZED to `SCROLL_BUCKET_PX` with a viewport of margin each
+ * side, so even this row only re-renders once per bucket of travel rather than
+ * once per frame. The Timeline still re-renders every frame during playback (it
+ * subscribes `currentTime`), so the memo below matters too.
+ */
+const SCROLL_BUCKET_PX = 256
+
+const RulerTicks = memo(function RulerTicks({
+  viewportRef,
+  pxPerSec,
+  trackWidth,
+  viewportWidth,
+}: {
+  viewportRef: React.RefObject<HTMLDivElement | null>
+  pxPerSec: number
+  trackWidth: number
+  viewportWidth: number
+}) {
+  const [bucket, setBucket] = useState(0)
+
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const read = rafThrottle(() => {
+      setBucket(Math.floor(el.scrollLeft / SCROLL_BUCKET_PX))
+    })
+    el.addEventListener('scroll', read, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', read)
+      read.cancel()
+    }
+  }, [viewportRef])
+
+  // Until the ResizeObserver has reported — the first paint, and any layout
+  // where the element has no width yet — fall back to the WHOLE track. An
+  // unmeasured viewport must mean "draw everything", not a blank ruler.
+  const span = viewportWidth > 0 ? viewportWidth : trackWidth
+  const centre = bucket * SCROLL_BUCKET_PX
+  const fromX = Math.max(0, centre - span)
+  const toX = Math.min(centre + 2 * span, trackWidth)
+  return <RulerTickSpans fromX={fromX} toX={toX} pxPerSec={pxPerSec} />
+})
+
+/** The spans themselves, split out so the window arithmetic above can change
+ *  without re-rendering them when the resulting range is unchanged. */
+const RulerTickSpans = memo(function RulerTickSpans({
+  fromX,
+  toX,
+  pxPerSec,
+}: {
+  fromX: number
+  toX: number
+  pxPerSec: number
+}) {
+  // Zoomed in far enough that the major step is sub-second, whole-second labels
+  // would all read the same — keep the tenths there and drop them otherwise.
+  const subSecond = tickStep(pxPerSec) < 1
   return (
     <>
-      {tickModel(width).map(({ t, major }) => {
-        const left = `${timeToX(t).toFixed(2)}px`
+      {tickModel(fromX, toX, pxPerSec).map(({ t, major }) => {
+        const left = `${timeToX(t, pxPerSec).toFixed(2)}px`
         return major ? (
           <div key={t}>
             <span
               className="absolute top-0 -translate-x-1/2 font-mono text-[10px] tabular-nums text-muted/70"
               style={{ left }}
             >
-              {formatTimecode(t).replace(/\.\d$/, '')}
+              {subSecond
+                ? formatTimecode(t)
+                : formatTimecode(t).replace(/\.\d$/, '')}
             </span>
             <span
               className="absolute bottom-0 h-1.5 w-px bg-muted/40"
@@ -113,6 +204,87 @@ const RulerTicks = memo(function RulerTicks({ width }: { width: number }) {
 })
 
 /**
+ * Zoom out / percent readout / zoom in / fit.
+ *
+ * The percent is VISIBLE rather than a tooltip: tooltips are hover-and-focus
+ * only (Radix ignores touch by design), so on a phone it would be the only
+ * indication of the current scale and unreachable. Same reason every button
+ * carries a real `aria-label` instead of relying on the tooltip text.
+ *
+ * Memoized, and rendered TWICE (the desktop transport row and the mobile pill —
+ * the pill is CSS-hidden, not unmounted). Six Radix tooltip subtrees reconciled
+ * on every Timeline render would otherwise land on every frame of playback, in
+ * place of the static text this replaced. All three props are stable, so the
+ * memo holds until the scale actually changes.
+ */
+const ZoomControls = memo(function ZoomControls({
+  pxPerSec,
+  onZoom,
+  onFit,
+}: {
+  pxPerSec: number
+  onZoom: (next: (current: number) => number) => void
+  onFit: () => void
+}) {
+  const percent = Math.round((pxPerSec / DEFAULT_PX_PER_SEC) * 100)
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label="Zoom out"
+            disabled={pxPerSec <= MIN_PX_PER_SEC}
+            onClick={() => {
+              onZoom((c) => zoomBy(c, 1 / ZOOM_STEP))
+            }}
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Zoom out (⌘−)</TooltipContent>
+      </Tooltip>
+      <span className="w-11 text-center font-mono text-[10px] tabular-nums text-muted/70">
+        {percent}%
+      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label="Zoom in"
+            disabled={pxPerSec >= MAX_PX_PER_SEC}
+            onClick={() => {
+              onZoom((c) => zoomBy(c, ZOOM_STEP))
+            }}
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Zoom in (⌘+)</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label="Zoom to fit"
+            onClick={onFit}
+          >
+            <Maximize2 className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Fit (⌘0)</TooltipContent>
+      </Tooltip>
+    </>
+  )
+})
+
+/**
  * Memoized on purpose. immer hands out a NEW `project` object on every document
  * mutation, and Timeline subscribes to it wholesale — so without this, dragging
  * an inspector slider (or a preview handle) re-renders every clip on the
@@ -127,6 +299,7 @@ const ClipBox = memo(function ClipBox({
   clip,
   trackId,
   trackType,
+  pxPerSec,
   selected,
   dragging,
   dragOffsetX,
@@ -138,10 +311,14 @@ const ClipBox = memo(function ClipBox({
   onTrimDown,
   onTrimMove,
   onTrimUp,
+  onContextMenuClip,
 }: {
   clip: Clip
   trackId: string
   trackType: Track['type']
+  /** The timeline scale. A plain number, so the memo below still bails out on
+   *  every render that isn't a zoom. */
+  pxPerSec: number
   selected: boolean
   /** True while this clip is the one being repositioned (lifts + offsets it). */
   dragging: boolean
@@ -163,22 +340,32 @@ const ClipBox = memo(function ClipBox({
   ) => void
   onTrimMove: (clip: Clip, e: React.PointerEvent) => void
   onTrimUp: (clip: Clip, e: React.PointerEvent) => void
+  onContextMenuClip: (clip: Clip, e: React.MouseEvent) => void
 }) {
   const asset = useEditorStore((s) => assetOf(s.project, clip))
   // Only the packed video track gets a seam; the overlay lane is free-positioned
   // and semantically has no "transition between clips", so it stays byte-identical.
   const gap = trackType === 'video' ? CLIP_GAP : 0
-  const rawWidth = clip.duration * TIMELINE_PX_PER_SEC
+  const rawWidth = clip.duration * pxPerSec
   // Half the gap comes off each side, so the seam is centered on the real
   // boundary (where the playhead / insertion caret already sit). Clamp so a
   // ~0.1s sliver clip (MIN_CLIP_DURATION → 4px) can't collapse to zero/negative.
   const width = Math.max(rawWidth - gap, 2)
-  const left = timeToX(clip.start) + gap / 2
+  const left = timeToX(clip.start, pxPerSec) + gap / 2
   const thumbs = asset?.thumbs ?? []
   // Filmstrip frames are sampled across the whole asset; map each tile to the
   // clip's trimmed source window [trimIn, trimIn+duration] so trims scrub visibly.
   const assetDur = asset?.durationSec ?? 0
-  const tileCount = Math.max(1, Math.ceil(width / TIMELINE_TILE_W))
+  // Capped at what the strip actually holds: the frames are sampled once at
+  // import (see FILMSTRIP_SEC_PER_FRAME), so asking for more tiles than exist
+  // would just repeat frames in a stutter as you zoom in. Past that cap the
+  // tiles STRETCH — hence the derived `tileW` below rather than a fixed
+  // TIMELINE_TILE_W, which would leave the rest of the clip blank.
+  const tileCount = Math.max(
+    1,
+    Math.min(Math.ceil(width / TIMELINE_TILE_W), thumbs.length || 1),
+  )
+  const tileW = width / tileCount
   const label = asset?.name ?? (clip.type === 'text' ? clip.text : clip.type)
 
   return (
@@ -194,6 +381,9 @@ const ClipBox = memo(function ClipBox({
       }}
       onPointerCancel={(e) => {
         onPointerCancelClip(clip, e)
+      }}
+      onContextMenu={(e) => {
+        onContextMenuClip(clip, e)
       }}
       style={{
         left: `${left.toFixed(2)}px`,
@@ -234,8 +424,9 @@ const ClipBox = memo(function ClipBox({
                   key={i}
                   style={{
                     backgroundImage: `url("${src}")`,
-                    left: `${(i * TIMELINE_TILE_W).toString()}px`,
-                    width: `${(TIMELINE_TILE_W + 1).toString()}px`,
+                    left: `${(i * tileW).toFixed(2)}px`,
+                    // +1 to hide the sub-pixel seam between adjacent tiles.
+                    width: `${(tileW + 1).toFixed(2)}px`,
                   }}
                   className="absolute inset-y-0 bg-cover bg-center"
                 />
@@ -310,18 +501,18 @@ const ClipBox = memo(function ClipBox({
 export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   const project = useEditorStore((s) => s.project)
   const currentTime = useEditorStore((s) => s.currentTime)
+  const pxPerSec = useEditorStore((s) => s.pxPerSec)
   const playing = useEditorStore((s) => s.playing)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const selectClip = useEditorStore((s) => s.selectClip)
-  const splitClip = useEditorStore((s) => s.splitClip)
-  const duplicateClip = useEditorStore((s) => s.duplicateClip)
-  const removeClip = useEditorStore((s) => s.removeClip)
   const moveClipToTrack = useEditorStore((s) => s.moveClipToTrack)
   const moveClipToNewTrack = useEditorStore((s) => s.moveClipToNewTrack)
   const setPanel = useEditorStore((s) => s.setPanel)
   const setClipTrimWindow = useEditorStore((s) => s.setClipTrimWindow)
   const { insertAssetAtTime, insertAssetOnLane, insertAssetOnNewLane } =
     useClipInsert()
+  // ONE definition of every clip command, shared with the keyboard.
+  const commands = useClipCommands()
 
   const scrubRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -339,6 +530,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   // usability win on desktop.
   const playheadDragRef = useRef<number | null>(null)
   const [viewportWidth, setViewportWidth] = useState(0)
+  const viewportWidthRef = useRef(0)
 
   // Reposition-gesture bookkeeping (imperative) + render state for the lifted clip.
   const clipDragRef = useRef<{
@@ -348,6 +540,9 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     startClientY: number
     sourceTrackId: string
     moved: boolean
+    /** Long-press timer id, armed for touch only. Lives INSIDE the drag ref on
+     *  purpose: a parallel gesture would race this one for the same pointer. */
+    longPress: number
   } | null>(null)
   const [clipDrag, setClipDrag] = useState<{
     clipId: string
@@ -373,12 +568,18 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   } | null>(null)
   // Where the in-flight drag (clip reposition OR panel drop) would land.
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
+  // Where the context menu is open, in client coords. Null = closed.
+  const [menuAt, setMenuAt] = useState<MenuAt | null>(null)
 
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
-      setViewportWidth(entries[0].contentRect.width)
+      const width = entries[0].contentRect.width
+      // Mirrored into a ref as well: the playback follow-scroll runs inside a
+      // rAF at frame rate and must not read layout to get it.
+      viewportWidthRef.current = width
+      setViewportWidth(width)
     })
     ro.observe(el)
     return () => {
@@ -389,21 +590,23 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   const total = projectDuration(project)
   const hasClips = total > 0
   const rulerDuration = Math.max(total, RULER_FALLBACK_SEC)
-  const contentWidth = rulerDuration * TIMELINE_PX_PER_SEC
+  const contentWidth = rulerDuration * pxPerSec
   const rulerWidth = Math.max(contentWidth, viewportWidth - TRACK_PAD * 2)
   const trackWidth = TRACK_PAD * 2 + rulerWidth
-  const playheadX = timeToX(clamp(currentTime, 0, rulerDuration))
+  const playheadX = timeToX(clamp(currentTime, 0, rulerDuration), pxPerSec)
 
   const selectedClip = clipById(project, selectedClipId)
-  const canSplit =
-    selectedClip != null &&
-    currentTime > selectedClip.start &&
-    currentTime < selectedClip.start + selectedClip.duration
 
   const seekFromClientX = (clientX: number) => {
     const el = scrubRef.current
     if (!el) return
-    onSeek(clamp(xToTime(clientX - el.getBoundingClientRect().left), 0, total))
+    onSeek(
+      clamp(
+        xToTime(clientX - el.getBoundingClientRect().left, pxPerSec),
+        0,
+        total,
+      ),
+    )
   }
 
   const selectClipAt = useCallback(
@@ -419,11 +622,17 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     [selectClip, onSeek],
   )
 
-  /** clientX → timeline seconds (clamped ≥0), accounting for scroll + inset. */
+  /** clientX → timeline seconds (clamped ≥0), accounting for scroll + inset.
+   *  Reads the scale IMPERATIVELY, like every other gesture helper here: a
+   *  `pxPerSec` dep would give this a new identity on each zoom and defeat the
+   *  memoized ClipBox it is handed down to. */
   const clientXToTime = useCallback((clientX: number) => {
     const el = scrubRef.current
     if (!el) return 0
-    return xToTime(clientX - el.getBoundingClientRect().left)
+    return xToTime(
+      clientX - el.getBoundingClientRect().left,
+      useEditorStore.getState().pxPerSec,
+    )
   }, [])
 
   /** Lanes worth drawing: always the video track, plus any overlay track that
@@ -464,7 +673,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     return snapTime(
       Math.max(0, raw),
       snapTargets(st.project, st.currentTime, excludeId),
-      SNAP_PX / TIMELINE_PX_PER_SEC,
+      snapToleranceSec(st.pxPerSec, SNAP_PX),
     )
   }, [])
 
@@ -482,6 +691,120 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
       playheadDragRef.current != null,
     [],
   )
+
+  // ── Zoom ──────────────────────────────────────────────────────────────────
+  // The pivot is captured by the COMMAND, not by the effect that restores it:
+  // once `pxPerSec` has changed, the old scale is gone and the anchor can no
+  // longer be computed. A ref rather than state — it must not cause a render.
+  const zoomAnchorRef = useRef<{ time: number; viewportX: number } | null>(null)
+
+  const applyZoom = useCallback(
+    (next: number | ((current: number) => number)) => {
+      const st = useEditorStore.getState()
+      const current = st.pxPerSec
+      const el = viewportRef.current
+      if (el) {
+        const time = zoomAnchorTime({
+          scrollLeft: el.scrollLeft,
+          viewportWidth: el.clientWidth,
+          playheadTime: st.currentTime,
+          pxPerSec: current,
+        })
+        zoomAnchorRef.current = {
+          time,
+          viewportX: timeToX(time, current) - el.scrollLeft,
+        }
+      }
+      st.setZoom(typeof next === 'function' ? next(current) : next)
+    },
+    [],
+  )
+
+  const zoomToFit = useCallback(() => {
+    const el = viewportRef.current
+    if (!el) return
+    applyZoom(
+      fitZoom(
+        projectDuration(useEditorStore.getState().project),
+        el.clientWidth,
+      ),
+    )
+  }, [applyZoom])
+
+  // Restore the pivot BEFORE paint: in a plain effect the browser has already
+  // painted one frame at the new scale with the old scrollLeft, which reads as
+  // the timeline lurching sideways on every zoom step.
+  useIsomorphicLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current
+    zoomAnchorRef.current = null
+    const el = viewportRef.current
+    if (!anchor || !el) return
+    el.scrollLeft = anchorScrollLeft(anchor.time, anchor.viewportX, pxPerSec)
+  }, [pxPerSec])
+
+  // Ctrl/Cmd + wheel. Registered by hand rather than via `onWheel` because the
+  // handler must `preventDefault()` to stop the browser's own page zoom, and
+  // React attaches wheel listeners passively. Chrome and Safari also deliver
+  // trackpad PINCH as a ctrlKey wheel, so this is the touchpad gesture too.
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    let pending = 0
+    let frame = 0
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      pending += e.deltaY
+      if (frame) return
+      // Coalesced to one store write per frame: a zoom necessarily re-renders
+      // every ClipBox (they all resize), so one per frame is the floor.
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        const delta = pending
+        pending = 0
+        applyZoom((current) => zoomBy(current, Math.exp(-delta / 300)))
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [applyZoom])
+
+  // Keep the playhead on screen during playback. Mandatory rather than a
+  // nicety: at 400px/s the playhead leaves a laptop viewport in ~2 seconds.
+  // Written imperatively (no React state, rAF-coalesced) for the same reason
+  // usePanelResize writes widths to the DOM — this runs at frame rate.
+  useEffect(() => {
+    let frame = 0
+    return useEditorStore.subscribe(
+      (s) => s.currentTime,
+      (t) => {
+        if (frame) return
+        frame = requestAnimationFrame(() => {
+          frame = 0
+          const el = viewportRef.current
+          const st = useEditorStore.getState()
+          // Never fight a live gesture for the scroll position.
+          if (!el || !st.playing || gestureBusy()) return
+          const x = timeToX(t, st.pxPerSec)
+          // The tracked width, NOT `el.clientWidth`: this runs right after
+          // React has committed the playhead's `style.left`, so reading a
+          // layout property here forces a style/layout flush every frame.
+          const width = viewportWidthRef.current
+          if (width <= 0) return
+          const margin = width * FOLLOW_MARGIN
+          if (
+            x < el.scrollLeft + margin ||
+            x > el.scrollLeft + width - margin
+          ) {
+            el.scrollLeft = Math.max(0, x - width / 2)
+          }
+        })
+      },
+    )
+  }, [gestureBusy])
 
   // --- Drag the playhead knob (works identically on mouse and touch) ---
   const onPlayheadPointerDown = (e: React.PointerEvent) => {
@@ -525,7 +848,9 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
         // clip stays under the finger. Snapped to nearby edges (every lane's
         // clip edges are targets) so captions land flush against cuts.
         snappedStart: snapStart(
-          clip.start + (e.clientX - drag.startClientX) / TIMELINE_PX_PER_SEC,
+          clip.start +
+            (e.clientX - drag.startClientX) /
+              useEditorStore.getState().pxPerSec,
           clip.id,
         ),
         timeAtPointer: clientXToTime(e.clientX),
@@ -539,6 +864,10 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
   const releaseClipDrag = useCallback(
     (el: Element, pointerId: number) => {
       releaseCapture(el, pointerId)
+      // The ONE teardown, so up / cancel / long-press-fired all disarm the
+      // timer — a survivor would open the menu after the gesture had ended.
+      const pending = clipDragRef.current?.longPress
+      if (pending) window.clearTimeout(pending)
       clipDragRef.current = null
       setClipDrag(null)
       updateDropTarget(null)
@@ -553,6 +882,11 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
       // Don't let the press reach the scrub handler (which seeks + deselects).
       e.stopPropagation()
       e.currentTarget.setPointerCapture(e.pointerId)
+      // Read off the event NOW: React pools nothing these days, but the timer
+      // below fires long after this handler returns and `currentTarget` is null
+      // by then.
+      const target = e.currentTarget
+      const { clientX: x, clientY: y } = e
       clipDragRef.current = {
         pointerId: e.pointerId,
         clipId: clip.id,
@@ -560,10 +894,23 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
         startClientY: e.clientY,
         sourceTrackId: trackId,
         moved: false,
+        // Touch has no right-click, so a long press opens the menu. Armed here
+        // rather than in a separate handler so the SAME bookkeeping cancels it.
+        longPress:
+          e.pointerType === 'mouse'
+            ? 0
+            : window.setTimeout(() => {
+                const d = clipDragRef.current
+                if (!d || d.pointerId !== e.pointerId || d.moved) return
+                // Take the gesture away from the drag before opening, or the
+                // finger lifting afterwards would commit a move.
+                releaseClipDrag(target, e.pointerId)
+                setMenuAt({ x, y })
+              }, LONG_PRESS_MS),
       }
       selectClipAt(clip)
     },
-    [gestureBusy, selectClipAt],
+    [gestureBusy, releaseClipDrag, selectClipAt],
   )
 
   const onClipPointerMove = useCallback(
@@ -575,6 +922,9 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
       if (!d.moved) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return
         d.moved = true
+        // Past the threshold this is a drag, not a press — the menu must not
+        // appear mid-move.
+        if (d.longPress) window.clearTimeout(d.longPress)
       }
       setClipDrag({ clipId: clip.id, offsetX: dx, offsetY: dy })
       updateDropTarget(resolveClipDropAt(clip, d, e))
@@ -620,6 +970,21 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     [releaseClipDrag, resolveClipDropAt, moveClipToTrack, moveClipToNewTrack],
   )
 
+  /** Right-click (mouse) — `isPrimaryPointer` already keeps the press itself
+   *  from starting a drag, so this only has to place the menu. */
+  const onClipContextMenu = useCallback(
+    (clip: Clip, e: React.MouseEvent) => {
+      e.preventDefault()
+      selectClipAt(clip)
+      setMenuAt({ x: e.clientX, y: e.clientY })
+    },
+    [selectClipAt],
+  )
+
+  const closeMenu = useCallback(() => {
+    setMenuAt(null)
+  }, [])
+
   /** The browser took the gesture (native pan, OS interrupt). Drop it silently:
    *  no reorder, and — because the snapshot happens at the commit point — no
    *  stray undo entry either. */
@@ -657,25 +1022,20 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     (clip: Clip, e: React.PointerEvent) => {
       const d = trimDragRef.current
       if (!d || d.pointerId !== e.pointerId || d.clipId !== clip.id) return
-      const deltaSec = (e.clientX - d.startClientX) / TIMELINE_PX_PER_SEC
+      const deltaSec =
+        (e.clientX - d.startClientX) / useEditorStore.getState().pxPerSec
       if (!d.moved) {
         if (Math.abs(e.clientX - d.startClientX) < DRAG_THRESHOLD) return
         d.moved = true
         // One undo entry for the whole gesture; ended on pointer up/cancel.
         useEditorStore.getState().beginEditSession()
       }
-      // A still image has no source timeline; video is bounded by its intrinsic length.
       const st = useEditorStore.getState()
-      const asset = assetOf(st.project, clip)
-      const sourceLen =
-        clip.type === 'video'
-          ? (asset?.durationSec ?? Number.POSITIVE_INFINITY)
-          : Number.POSITIVE_INFINITY
       const next = resolveTrim(
         d.edge,
         { trimIn: d.origTrimIn, duration: d.origDuration },
         deltaSec,
-        sourceLen,
+        clipSourceLen(st.project, clip),
         MIN_CLIP_DURATION,
       )
       // One commit for both track kinds: `freeTrimWindow` moves `start` with
@@ -764,38 +1124,24 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
     }
   }
 
-  const doSplit = () => {
-    if (!selectedClip || !canSplit) return
-    useEditorStore.getState().beginEdit()
-    splitClip(selectedClip.id, currentTime)
-    selectClip(null)
-  }
-  const doDuplicate = () => {
-    if (!selectedClip) return
-    useEditorStore.getState().beginEdit()
-    const id = duplicateClip(selectedClip.id)
-    if (id) selectClip(id)
-  }
-  const doDelete = () => {
-    if (!selectedClip) return
-    useEditorStore.getState().beginEdit()
-    removeClip(selectedClip.id)
-    selectClip(null)
-  }
-
   const tools = [
-    { Icon: Scissors, label: 'Split', onClick: doSplit, enabled: canSplit },
+    {
+      Icon: Scissors,
+      label: 'Split (S)',
+      onClick: commands.split,
+      enabled: commands.can.split,
+    },
     {
       Icon: Copy,
-      label: 'Duplicate',
-      onClick: doDuplicate,
-      enabled: selectedClip != null,
+      label: 'Duplicate (⌘D)',
+      onClick: commands.duplicate,
+      enabled: commands.can.act,
     },
     {
       Icon: Trash2,
-      label: 'Delete',
-      onClick: doDelete,
-      enabled: selectedClip != null,
+      label: 'Delete (⌫)',
+      onClick: commands.remove,
+      enabled: commands.can.act,
     },
   ]
 
@@ -927,11 +1273,14 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
           </div>
         </div>
 
-        {/* Decorative — dropped below lg, where the width is needed. */}
-        <div className="col-start-3 hidden justify-end lg:flex">
-          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted/50">
-            On-device · WebCodecs
-          </span>
+        {/* Zoom on desktop. Dropped below lg, where the width is needed — the
+            mobile pill below carries the same control. */}
+        <div className="col-start-3 hidden items-center justify-end gap-1 lg:flex">
+          <ZoomControls
+            pxPerSec={pxPerSec}
+            onZoom={applyZoom}
+            onFit={zoomToFit}
+          />
         </div>
       </div>
 
@@ -1015,7 +1364,12 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
               the lanes do. `scrubRef`'s left edge is unaffected, so
               clientXToTime needs no change. */}
           <div className="sticky top-0 z-20 h-6 bg-surface/95 backdrop-blur-sm">
-            <RulerTicks width={rulerWidth} />
+            <RulerTicks
+              viewportRef={viewportRef}
+              pxPerSec={pxPerSec}
+              trackWidth={trackWidth}
+              viewportWidth={viewportWidth}
+            />
 
             {/* The knob is the grab target: a transparent 44×36 box around a
                 9px marker. `touch-none` claims the drag from the scroller, so
@@ -1098,6 +1452,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
                     clip={clip}
                     trackId={track.id}
                     trackType={track.type}
+                    pxPerSec={pxPerSec}
                     selected={clip.id === selectedClipId}
                     dragging={clipDrag?.clipId === clip.id}
                     dragOffsetX={
@@ -1113,6 +1468,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
                     onTrimDown={onTrimPointerDown}
                     onTrimMove={onTrimPointerMove}
                     onTrimUp={onTrimPointerUp}
+                    onContextMenuClip={onClipContextMenu}
                   />
                 ))}
                 {/* The magnetic insertion caret lives INSIDE its lane (lanes
@@ -1121,7 +1477,9 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
                   dropTarget.trackId === track.id && (
                     <div
                       className="pointer-events-none absolute -inset-y-1 z-20 w-[3px] -translate-x-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
-                      style={{ left: `${dropTarget.caretX.toFixed(2)}px` }}
+                      style={{
+                        left: `${timeToX(dropTarget.caretTime, pxPerSec).toFixed(2)}px`,
+                      }}
                     />
                   )}
                 {/* The free-lane landing window: where the drop will actually
@@ -1132,8 +1490,8 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
                     <div
                       className="pointer-events-none absolute inset-y-0 z-20 rounded-[9px] border-2 border-select/80 bg-select/10"
                       style={{
-                        left: `${timeToX(dropTarget.start).toFixed(2)}px`,
-                        width: `${(dropTarget.duration * TIMELINE_PX_PER_SEC).toFixed(2)}px`,
+                        left: `${timeToX(dropTarget.start, pxPerSec).toFixed(2)}px`,
+                        width: `${(dropTarget.duration * pxPerSec).toFixed(2)}px`,
                       }}
                     />
                   )}
@@ -1151,7 +1509,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
                       // clutter the lane and absorb pointerdowns near the seam.
                       className="group absolute inset-y-0 z-20 flex w-4 -translate-x-1/2 items-center justify-center [@media(pointer:coarse)]:hidden"
                       style={{
-                        left: `${boundaryX(track.clips, i + 1).toFixed(2)}px`,
+                        left: `${timeToX(boundaryTime(track.clips, i + 1), pxPerSec).toFixed(2)}px`,
                       }}
                     >
                       <button
@@ -1211,10 +1569,28 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
           {!hasClips && dropTarget?.kind === 'main' && (
             <div
               className="pointer-events-none absolute bottom-2 top-7 z-20 w-[3px] -translate-x-1/2 rounded-full bg-select shadow-[0_0_6px_rgba(0,0,0,0.5)]"
-              style={{ left: `${dropTarget.caretX.toFixed(2)}px` }}
+              style={{
+                left: `${timeToX(dropTarget.caretTime, pxPerSec).toFixed(2)}px`,
+              }}
             />
           )}
         </div>
+      </div>
+
+      <ClipContextMenu at={menuAt} onClose={closeMenu} commands={commands} />
+
+      {/* Zoom on touch. Its own pill on the OPPOSITE side, and not folded into
+          the contextual one below, because zoom is not about a selection —
+          gating it on one would leave a phone with no way to zoom an empty or
+          deselected timeline. Buttons + keys are the whole touch story here:
+          pinch-to-zoom would mean dropping `pinch-zoom` from the scrub
+          surface's touch-action, which CLAUDE.md keeps deliberately. */}
+      <div className="absolute bottom-3 left-[max(0.5rem,env(safe-area-inset-left))] z-30 flex items-center gap-1 rounded-full border border-edge bg-raised/95 p-1 shadow-lg backdrop-blur lg:hidden">
+        <ZoomControls
+          pxPerSec={pxPerSec}
+          onZoom={applyZoom}
+          onFit={zoomToFit}
+        />
       </div>
 
       {/* Below lg the transport row has no space for the tools, so they appear
@@ -1247,6 +1623,21 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
             className="h-9 w-9 rounded-full"
           >
             <SlidersHorizontal className="h-4 w-4" />
+          </Button>
+          {/* The DISCOVERABLE path to the long tail on touch. Long-press works
+              too, but an affordance reachable only by an invisible gesture
+              doesn't count — so the menu is shippable because of this button. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="More clip actions"
+            className="h-9 w-9 rounded-full"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              setMenuAt({ x: r.left, y: r.top })
+            }}
+          >
+            <MoreHorizontal className="h-4 w-4" />
           </Button>
         </div>
       )}

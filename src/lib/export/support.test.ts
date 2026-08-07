@@ -14,7 +14,8 @@ import {
   createTrack,
   DEFAULT_CANVAS,
 } from '@/lib/model/factories'
-import { CANVAS_ASPECT, IDENTITY } from '@/lib/transform'
+import { IDENTITY } from '@/lib/transform'
+import { CANVAS_PRESETS, canvasAspect } from '@/lib/model/canvas'
 import type { Clip, MediaAsset, Project } from '@/lib/model/types'
 
 function asset(id: string, name: string): MediaAsset {
@@ -111,11 +112,29 @@ describe('canvas sizing', () => {
 })
 
 describe('DEFAULT_CANVAS', () => {
-  it('derives its width from the ONE aspect constant', () => {
-    expect(DEFAULT_CANVAS.width / DEFAULT_CANVAS.height).toBeCloseTo(
-      CANVAS_ASPECT,
-    )
+  it('is the 16:9 preset, at 1080p', () => {
     expect(DEFAULT_CANVAS.width).toBe(1920)
+    expect(DEFAULT_CANVAS.height).toBe(1080)
+  })
+})
+
+describe('every canvas preset survives the H.264 even-dimension rounding', () => {
+  // The reason preset sizes are written out as even integers instead of being
+  // derived from a float ratio: `outputCanvas` rounds DOWN to even, so a
+  // derived 607.5 would become 606 and the export would be 0.25% off the
+  // aspect the preview composed at.
+  it('is the identity on all four presets', () => {
+    for (const preset of CANVAS_PRESETS) {
+      const canvas = {
+        width: preset.width,
+        height: preset.height,
+        background: '#000000',
+      }
+      expect(outputCanvas(canvas)).toEqual(canvas)
+      expect(canvasAspect(outputCanvas(canvas))).toBeCloseTo(
+        canvasAspect(preset),
+      )
+    }
   })
 })
 

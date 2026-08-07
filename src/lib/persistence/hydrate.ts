@@ -9,6 +9,7 @@ import { getAssetBlob } from './assetStore'
 import { withTextDefaults } from '@/lib/model/text'
 import type { MediaAsset, Project } from '@/lib/model/types'
 import type { StoredProject } from './projectStore'
+import { normalizeCanvas } from '@/lib/model/canvas'
 
 export interface HydrateDeps {
   loadBlob: (id: string) => Promise<Blob | undefined>
@@ -84,7 +85,7 @@ export async function hydrateProject(
       : {
           id: stored.id,
           name: stored.name,
-          canvas: stored.canvas,
+          canvas: normalizeCanvas(stored.canvas),
           tracks,
           assets,
         }

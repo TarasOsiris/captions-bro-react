@@ -26,7 +26,9 @@
 // can't hijack a running drag), `pointercancel` restores instead of committing,
 // and `isPrimaryPointer` keeps a right-press from starting a stuck drag.
 
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
+import { useIsomorphicLayoutEffect } from './useIsomorphicLayoutEffect'
+import { EDITOR_BARE_KEY_CODES } from './useEditorKeyboard'
 import { isPrimaryPointer } from '@/lib/pointer'
 import {
   clampPanelWidth,
@@ -39,11 +41,14 @@ import type { PanelWidthSpec } from '@/lib/persistence/layoutPrefs'
 /** ←/→ step on the focused separator (px). */
 const KEY_STEP = 16
 
-/** `useLayoutEffect` warns when it runs during SSR. The width restore must
- *  happen before paint (otherwise every load flashes the default width first),
- *  and it reads localStorage, so it is client-only by nature. */
-const useIsomorphicLayoutEffect =
-  typeof window === 'undefined' ? useEffect : useLayoutEffect
+/** Keys the separator acts on itself, so they must reach its switch rather
+ *  than being swallowed by the global-shortcut guard above it. */
+const SEPARATOR_HANDLED_CODES: readonly string[] = [
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+]
 
 interface Entry {
   el: HTMLElement
@@ -298,7 +303,25 @@ export function usePanelResize(
    *  SELECTED CLIP) from a focused splitter. Everything else — Tab, Cmd+Z —
    *  passes through untouched. */
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    let next: number | null = null
+    // Consumed with no effect: a separator does nothing on these, and the
+    // global handler must not see them either. `useEditorKeyboard` listens on
+    // WINDOW and only skips INPUT/TEXTAREA, so anything left unconsumed acts on
+    // the timeline while the user is resizing a panel — an unconsumed
+    // Backspace deleted the selected clip, and S/Q/W would split or trim it.
+    //
+    // Matched on `code`, the same namespace the list is defined in: comparing
+    // `e.key` characters here disagreed with the listener on any non-QWERTY
+    // layout. Keys the separator itself ACTS on fall through to the switch.
+    if (
+      EDITOR_BARE_KEY_CODES.includes(e.code) &&
+      !SEPARATOR_HANDLED_CODES.includes(e.code)
+    ) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    // Every surviving case assigns; `default` returns.
+    let next: number
     switch (e.key) {
       case 'ArrowLeft':
         next = renderedWidth() - KEY_STEP * sign
@@ -315,21 +338,12 @@ export function usePanelResize(
       case 'Enter':
         next = spec.initial
         break
-      // Consumed with no effect: a separator does nothing on these, and the
-      // global handler must not see them either.
-      case ' ':
-      case 'Spacebar':
-      case 'Delete':
-      case 'Backspace':
-      case 'Escape':
-        break
       default:
         return
     }
     e.preventDefault()
     e.stopPropagation()
-    if (next != null)
-      savePanelWidth(spec, setPreferred(Math.min(maxWidth(), next)))
+    savePanelWidth(spec, setPreferred(Math.min(maxWidth(), next)))
   }
 
   return {

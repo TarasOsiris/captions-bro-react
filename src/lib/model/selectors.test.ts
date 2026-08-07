@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  clipAtTime,
   clipIsLiveAt,
+  clipSourceLen,
   freeTrimWindow,
   insertionIndex,
   mediaClips,
@@ -8,10 +10,11 @@ import {
   resolveTrim,
   snapTargets,
   snapTime,
+  trimToTimeWindow,
 } from './selectors'
 import { createProject, createTextClip, createTrack } from './factories'
 import { IDENTITY } from '@/lib/transform'
-import type { Clip } from './types'
+import type { Clip, MediaAsset, Track } from './types'
 
 function clip(id: string, start: number, duration: number): Clip {
   return {
@@ -22,6 +25,21 @@ function clip(id: string, start: number, duration: number): Clip {
     duration,
     trimIn: 0,
     transform: { ...IDENTITY },
+  }
+}
+
+function asset(id: string, durationSec: number): MediaAsset {
+  return {
+    id,
+    kind: 'video',
+    name: id,
+    sizeBytes: 1,
+    file: new File([], id),
+    url: 'blob:x',
+    naturalWidth: 16,
+    naturalHeight: 9,
+    durationSec,
+    thumbs: [],
   }
 }
 
@@ -195,5 +213,106 @@ describe('clipIsLiveAt — the live window the export fast path relies on', () =
     expect(clipIsLiveAt(c, 5)).toBe(false)
     expect(clipIsLiveAt(c, 1.99)).toBe(false)
     expect(clipIsLiveAt(c, 5.01)).toBe(false)
+  })
+})
+
+describe('clipAtTime', () => {
+  const track: Track = {
+    id: 'tr',
+    type: 'video',
+    clips: [clip('a', 0, 5), clip('b', 5, 3)],
+  }
+
+  it('finds the clip covering a time', () => {
+    expect(clipAtTime(track, 2)?.id).toBe('a')
+    expect(clipAtTime(track, 6)?.id).toBe('b')
+  })
+
+  it('is half-open — the LATER clip wins at a packed boundary', () => {
+    // Same rule as clipIsLiveAt, so split-at-the-playhead agrees with what the
+    // preview is actually showing at that instant.
+    expect(clipAtTime(track, 5)?.id).toBe('b')
+  })
+
+  it('returns null past the end and on an empty track', () => {
+    expect(clipAtTime(track, 8)).toBeNull()
+    expect(clipAtTime({ id: 'e', type: 'video', clips: [] }, 0)).toBeNull()
+  })
+})
+
+describe('clipSourceLen', () => {
+  it('bounds a video by its asset duration', () => {
+    const project = createProject('t')
+    project.assets.a1 = asset('a1', 12)
+    expect(
+      clipSourceLen(project, {
+        ...clip('c', 0, 5),
+        type: 'video',
+        assetId: 'a1',
+      }),
+    ).toBe(12)
+  })
+
+  it('leaves a still UNBOUNDED — it has no source timeline', () => {
+    const project = createProject('t')
+    project.assets.a1 = asset('a1', 12)
+    expect(
+      clipSourceLen(project, {
+        ...clip('c', 0, 5),
+        type: 'image',
+        assetId: 'a1',
+      }),
+    ).toBe(Number.POSITIVE_INFINITY)
+  })
+
+  it('is unbounded when the asset is unknown', () => {
+    expect(
+      clipSourceLen(createProject('t'), {
+        ...clip('c', 0, 5),
+        type: 'video',
+        assetId: 'gone',
+      }),
+    ).toBe(Number.POSITIVE_INFINITY)
+  })
+})
+
+describe('trimToTimeWindow', () => {
+  const c = { ...clip('c', 10, 6), trimIn: 2 }
+
+  it('trims the HEAD up to the playhead, moving start with it', () => {
+    // t=13 is 3s into a clip starting at 10: 3s comes off the head.
+    const next = trimToTimeWindow('left', c, 13, Number.POSITIVE_INFINITY, 0.1)
+    expect(next).toEqual({ start: 13, trimIn: 5, duration: 3 })
+  })
+
+  it('trims the TAIL to the playhead, leaving start alone', () => {
+    const next = trimToTimeWindow('right', c, 13, Number.POSITIVE_INFINITY, 0.1)
+    expect(next).toEqual({ start: 10, trimIn: 2, duration: 3 })
+  })
+
+  it('refuses a cut ON either edge — there is nothing to trim', () => {
+    for (const edge of ['left', 'right'] as const) {
+      expect(
+        trimToTimeWindow(edge, c, 10, Number.POSITIVE_INFINITY, 0.1),
+      ).toBeNull()
+      expect(
+        trimToTimeWindow(edge, c, 16, Number.POSITIVE_INFINITY, 0.1),
+      ).toBeNull()
+    }
+  })
+
+  it('refuses a cut outside the clip entirely', () => {
+    expect(
+      trimToTimeWindow('left', c, 2, Number.POSITIVE_INFINITY, 0.1),
+    ).toBeNull()
+    expect(
+      trimToTimeWindow('right', c, 99, Number.POSITIVE_INFINITY, 0.1),
+    ).toBeNull()
+  })
+
+  it('inherits the minimum-duration clamp rather than restating it', () => {
+    // A head trim to 15.99 would leave 0.01s; the shared clamp holds it at 1.
+    const next = trimToTimeWindow('left', c, 15.99, Number.POSITIVE_INFINITY, 1)
+    expect(next?.duration).toBeCloseTo(1)
   })
 })

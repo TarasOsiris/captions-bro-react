@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { RotateCw, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useEditorStore } from '@/store/editorStore'
+import { canvasAspect } from '@/lib/model/canvas'
 import { clipVisibleAt, resolveScene } from '@/lib/model/scene'
 import { clipById, projectDuration } from '@/lib/model/selectors'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
@@ -12,7 +13,6 @@ import { useElementSize } from '@/hooks/useElementSize'
 import { usePreviewCompositor } from '@/hooks/usePreviewCompositor'
 import { withTextDefaults } from '@/lib/model/text'
 import {
-  CANVAS_ASPECT,
   anchorRectAt,
   applyCrop,
   applyMove,
@@ -198,6 +198,9 @@ export function PreviewStage({
   onPickFile,
 }: PreviewStageProps) {
   const project = useEditorStore((s) => s.project)
+  // The preview frame's shape. Derived rather than a constant: the project's
+  // ratio is a user choice now (9:16 / 1:1 / 4:5 for social).
+  const aspect = canvasAspect(project.canvas)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const playing = useEditorStore((s) => s.playing)
   const selectClip = useEditorStore((s) => s.selectClip)
@@ -678,20 +681,22 @@ export function PreviewStage({
         onPointerMove={onFramePointerMove}
         onPointerUp={endGesture}
         onPointerCancel={endGesture}
-        // Always the largest CANVAS_ASPECT box that fits the stage (contain),
-        // sized from the container's own dimensions so BOTH axes stay locked to
-        // the ratio. A single-axis fit (h-full + max-w-full) lets max-width
-        // clamp the width while height stays full, silently squishing the frame
-        // — and with it everything drawn onto the canvas. Never regress this to
-        // a one-axis fit.
+        // Always the largest box of the PROJECT'S aspect that fits the stage
+        // (contain), sized from the container's own dimensions so BOTH axes stay
+        // locked to the ratio. A single-axis fit (h-full + max-w-full) lets
+        // max-width clamp the width while height stays full, silently squishing
+        // the frame — and with it everything drawn onto the canvas. Never
+        // regress this to a one-axis fit: switching the project to 9:16 makes
+        // that failure obvious in one direction and invisible in the other.
         //
-        // An inline style, not a class: Tailwind can't interpolate a TS
-        // constant into an arbitrary value, and a hardcoded 56.25/177.778 pair
-        // is exactly the kind of duplicated magic number that drifts from the
-        // constant it mirrors (see the `19rem` note in CLAUDE.md).
+        // Only the two interpolated NUMBERS change with the aspect; the `min()`
+        // pair on each axis is the contract. An inline style, not a class:
+        // Tailwind can't interpolate a runtime value into an arbitrary value,
+        // and a hardcoded 56.25/177.778 pair is exactly the kind of duplicated
+        // magic number that drifts (see the `19rem` note in CLAUDE.md).
         style={{
-          height: `min(100cqh, ${(100 / CANVAS_ASPECT).toString()}cqw)`,
-          width: `min(100cqw, ${(100 * CANVAS_ASPECT).toString()}cqh)`,
+          height: `min(100cqh, ${(100 / aspect).toFixed(4)}cqw)`,
+          width: `min(100cqw, ${(100 * aspect).toFixed(4)}cqh)`,
         }}
         className="relative touch-none"
       >

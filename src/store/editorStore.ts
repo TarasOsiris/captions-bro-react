@@ -1,5 +1,5 @@
 // The single editor store: Zustand (as in fakechat) + immer for clean nested
-// document updates. Composed from four slices. Read with atomic selectors
+// document updates. Composed from seven slices. Read with atomic selectors
 // (`useEditorStore(s => s.currentTime)`); read imperatively in async/rAF code with
 // `useEditorStore.getState()` — this replaces the old manual ref-mirroring.
 
@@ -13,19 +13,22 @@ import { createPlaybackSlice } from './playbackSlice'
 import { createSelectionSlice } from './selectionSlice'
 import { createExportSlice } from './exportSlice'
 import { createUiSlice } from './uiSlice'
+import { createClipboardSlice } from './clipboardSlice'
 import type { DocumentSlice } from './documentSlice'
 import type { HistorySlice } from './historySlice'
 import type { PlaybackSlice } from './playbackSlice'
 import type { SelectionSlice } from './selectionSlice'
 import type { ExportSlice } from './exportSlice'
 import type { UiSlice } from './uiSlice'
+import type { ClipboardSlice } from './clipboardSlice'
 
 export type EditorState = DocumentSlice &
   HistorySlice &
   PlaybackSlice &
   SelectionSlice &
   ExportSlice &
-  UiSlice
+  UiSlice &
+  ClipboardSlice
 
 /** Slice-creator type bound to the middleware stack. Each slice is `(set,get)=>{…}`. */
 export type ImmerSlice<T> = StateCreator<
@@ -47,6 +50,7 @@ export const useEditorStore = create<EditorState>()(
       ...createSelectionSlice(...a),
       ...createExportSlice(...a),
       ...createUiSlice(...a),
+      ...createClipboardSlice(...a),
     })),
   ),
 )

@@ -6,10 +6,14 @@ import {
   applyMove,
   applyRotation,
   applyScale,
+  clearCrop,
   containFit,
+  coverScale,
   cropInsets,
   cropValueForDrag,
   croppedRect,
+  fillTransform,
+  fitTransform,
   hitTestRect,
   mediaRect,
   placeRect,
@@ -559,5 +563,170 @@ describe('snapMove — canvas edges and center lines', () => {
     expect(s.transform).toBe(t)
     expect(s.guides.x).toBeNull()
     expect(s.guides.y).toBeNull()
+  })
+})
+
+describe('framing commands — Fit / Fill / Reset crop', () => {
+  const W = 1920
+  const H = 1080
+
+  /** Half-width and half-height of the placed box's rotated bounding box. */
+  function bounds(t: Transform, aspect: number, cw = W, ch = H) {
+    const b = rectBounds(mediaRect(t, aspect, cw, ch))
+    return { w: b.right - b.left, h: b.bottom - b.top }
+  }
+
+  describe('clearCrop', () => {
+    it('DELETES the key rather than zeroing it, so it serializes as uncropped', () => {
+      const cropped = applyCrop(IDENTITY, 'left', 0.25)
+      const bare = clearCrop(cropped)
+      expect('crop' in bare).toBe(false)
+      // The round-trip a persisted document takes.
+      expect(JSON.parse(JSON.stringify(bare))).toEqual(
+        JSON.parse(JSON.stringify(IDENTITY)),
+      )
+    })
+
+    it('is a no-op (same reference) when there is no crop', () => {
+      expect(clearCrop(IDENTITY)).toBe(IDENTITY)
+    })
+
+    it('leaves scale, offset and rotation alone', () => {
+      const t = applyCrop(
+        { scale: 2, tx: 0.1, ty: -0.2, rotationDeg: 30 },
+        'top',
+        0.3,
+      )
+      expect(clearCrop(t)).toEqual({
+        scale: 2,
+        tx: 0.1,
+        ty: -0.2,
+        rotationDeg: 30,
+      })
+    })
+  })
+
+  describe('fitTransform', () => {
+    it('re-centers at contain-fit and clears the crop', () => {
+      const t = applyCrop(
+        { scale: 3, tx: 0.4, ty: 0.4, rotationDeg: 0 },
+        'right',
+        0.2,
+      )
+      expect(fitTransform(t)).toEqual({
+        scale: 1,
+        tx: 0,
+        ty: 0,
+        rotationDeg: 0,
+      })
+    })
+
+    it('KEEPS rotation — it is framing, not placement to undo', () => {
+      expect(fitTransform({ ...IDENTITY, rotationDeg: 90 }).rotationDeg).toBe(
+        90,
+      )
+    })
+
+    it('leaves the whole frame visible for any source aspect', () => {
+      for (const aspect of [16 / 9, 9 / 16, 1, 4 / 5, 2.39]) {
+        const { w, h } = bounds(fitTransform(IDENTITY), aspect)
+        expect(w).toBeLessThanOrEqual(W + 0.001)
+        expect(h).toBeLessThanOrEqual(H + 0.001)
+        // Contain means it TOUCHES one axis; it isn't merely small.
+        expect(Math.max(w / W, h / H)).toBeCloseTo(1)
+      }
+    })
+  })
+
+  describe('coverScale / fillTransform', () => {
+    it('covers both axes with no letterbox, for every source aspect', () => {
+      for (const aspect of [16 / 9, 9 / 16, 1, 4 / 5, 2.39]) {
+        const { w, h } = bounds(fillTransform(IDENTITY, aspect, W, H), aspect)
+        expect(w).toBeGreaterThanOrEqual(W - 0.001)
+        expect(h).toBeGreaterThanOrEqual(H - 0.001)
+      }
+    })
+
+    it('is exactly 1 for a source that already matches the canvas aspect', () => {
+      expect(coverScale(IDENTITY, W / H, W, H)).toBeCloseTo(1)
+    })
+
+    it('is the plain max(w,h) ratio at 0 degrees', () => {
+      // A 1:1 source contain-fits to 1080x1080; covering 1920 wide needs 16/9.
+      expect(coverScale(IDENTITY, 1, W, H)).toBeCloseTo(16 / 9)
+    })
+
+    // The property that actually defines "cover", and the one an AABB-based
+    // implementation gets wrong: at 45° a box's bounding box is far larger than
+    // the box, so bounding-box coverage reports success while the canvas
+    // corners are in fact cut off.
+    it('actually contains all four canvas corners, at every rotation', () => {
+      for (const rotationDeg of [0, 15, 30, 45, 60, 90, 137, 180, -30]) {
+        for (const aspect of [16 / 9, 9 / 16, 1, 2.39]) {
+          const t = fillTransform({ ...IDENTITY, rotationDeg }, aspect, W, H)
+          const r = mediaRect(t, aspect, W, H)
+          for (const [x, y] of [
+            [0, 0],
+            [W, 0],
+            [W, H],
+            [0, H],
+          ]) {
+            // A hair inside, so exact-touch corners aren't at the mercy of ulps.
+            const dx = x - r.cx
+            const dy = y - r.cy
+            expect(hitTestRect(r, dx * (1 - 1e-9), dy * (1 - 1e-9))).toBe(true)
+          }
+        }
+      }
+    })
+
+    it('needs a bigger scale at 45 degrees than square-on', () => {
+      const tilted = { ...IDENTITY, rotationDeg: 45 }
+      expect(coverScale(tilted, 16 / 9, W, H)).toBeGreaterThan(
+        coverScale(IDENTITY, 16 / 9, W, H),
+      )
+    })
+
+    it('at 90 degrees swaps which canvas axis is the binding one', () => {
+      // A 16:9 source contain-fits to 1920×1080; turned on its side it must
+      // grow until its 1080-wide edge spans the canvas HEIGHT... and its
+      // 1920 edge spans the width. max(1080/1920, 1920/1080) = 16/9.
+      expect(
+        coverScale({ ...IDENTITY, rotationDeg: 90 }, 16 / 9, W, H),
+      ).toBeCloseTo(16 / 9)
+      // A square source is rotation-invariant.
+      expect(coverScale({ ...IDENTITY, rotationDeg: 90 }, 1, W, H)).toBeCloseTo(
+        coverScale(IDENTITY, 1, W, H),
+      )
+    })
+
+    it('clears the crop and recenters', () => {
+      const t = applyCrop(
+        { scale: 1, tx: 0.3, ty: 0.3, rotationDeg: 0 },
+        'left',
+        0.2,
+      )
+      const filled = fillTransform(t, 1, W, H)
+      expect('crop' in filled).toBe(false)
+      expect(filled.tx).toBe(0)
+      expect(filled.ty).toBe(0)
+    })
+
+    it('survives a degenerate aspect rather than returning NaN', () => {
+      expect(coverScale(IDENTITY, 0, W, H)).toBe(IDENTITY.scale)
+      expect(coverScale(IDENTITY, Number.NaN, W, H)).toBe(IDENTITY.scale)
+    })
+
+    it('works on a portrait canvas too (the 9:16 project case)', () => {
+      const [cw, ch] = [1080, 1920]
+      const { w, h } = bounds(
+        fillTransform(IDENTITY, 16 / 9, cw, ch),
+        16 / 9,
+        cw,
+        ch,
+      )
+      expect(w).toBeGreaterThanOrEqual(cw - 0.001)
+      expect(h).toBeGreaterThanOrEqual(ch - 0.001)
+    })
   })
 })
