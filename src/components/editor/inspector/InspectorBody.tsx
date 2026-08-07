@@ -5,25 +5,37 @@
 // The scroll contract (`min-h-0 flex-1 overflow-y-auto overscroll-contain`) is
 // the same one MediaBin uses, which is what makes it work unchanged in a 256px
 // column and in a height-capped sheet.
+//
+// ONE deliberate divergence between the two layouts: the header's dismiss
+// button. The sheet CLOSES itself (`setPanel(null)`); the desktop column
+// COLLAPSES to its edge tab. Everything else is identical by construction.
 
-import { SlidersHorizontal, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { useEditorStore } from '@/store/editorStore'
 import { clipById } from '@/lib/model/selectors'
 import { inspectorKindForClip, inspectorTitle } from '@/lib/model/inspector'
 import { Button } from '@/components/ui/button'
+import { InspectorEmptyArt } from './InspectorEmptyArt'
 import { MediaInspector } from './MediaInspector'
 import { TextInspector } from './TextInspector'
 import { TimingSection } from './TimingSection'
 
 export function InspectorBody({
   variant,
+  closeRef,
 }: {
-  /** 'column' is the desktop sidebar; 'sheet' is the mobile overlay, which
-   *  needs its own dismiss control and its own accordion group. */
+  /** 'column' is the desktop sidebar; 'sheet' is the mobile overlay. They
+   *  dismiss differently (see above) and need their own accordion groups. */
   variant: 'column' | 'sheet'
+  /** The desktop column focuses this when it expands, so a collapse→expand
+   *  round trip returns focus where it started rather than dropping it on
+   *  <body> — where a stray Backspace reaches `useEditorKeyboard` and deletes
+   *  the selected clip. */
+  closeRef?: React.Ref<HTMLButtonElement>
 }) {
   const clip = useEditorStore((s) => clipById(s.project, s.selectedClipId))
   const setPanel = useEditorStore((s) => s.setPanel)
+  const setInspectorCollapsed = useEditorStore((s) => s.setInspectorCollapsed)
   const kind = inspectorKindForClip(clip)
 
   return (
@@ -32,19 +44,22 @@ export function InspectorBody({
         <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
           {inspectorTitle(kind)}
         </span>
-        {variant === 'sheet' && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Close inspector"
-            onClick={() => {
-              setPanel(null)
-            }}
-            className="h-6 w-6"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        )}
+        {/* One control, two meanings — see the divergence note at the top. */}
+        <Button
+          ref={closeRef}
+          variant="ghost"
+          size="icon"
+          aria-label={
+            variant === 'sheet' ? 'Close inspector' : 'Hide inspector'
+          }
+          onClick={() => {
+            if (variant === 'sheet') setPanel(null)
+            else setInspectorCollapsed(true)
+          }}
+          className="h-6 w-6"
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4">
@@ -72,10 +87,8 @@ export function InspectorBody({
           // `h-full`, not `flex-1`: the scroll container is a block, so a flex
           // child of it has no height to grow into and the empty state would
           // sit at the top of an always-visible column.
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-raised text-muted/70">
-              <SlidersHorizontal className="h-5 w-5" />
-            </div>
+          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+            <InspectorEmptyArt />
             <p className="max-w-[12rem] text-xs text-muted">
               {kind === 'unsupported'
                 ? 'Properties for this clip are coming soon.'

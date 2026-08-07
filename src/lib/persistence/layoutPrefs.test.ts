@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  INSPECTOR_TAB_W,
   INSPECTOR_WIDTH,
   MEDIA_WIDTH,
   MIN_PREVIEW_W,
@@ -58,6 +59,20 @@ describe('fitPanels', () => {
 
   it('is a no-op on an empty list', () => {
     expect(fitPanels([], 1024)).toEqual([])
+  })
+
+  // With the inspector collapsed only the media column is in the budget, and
+  // the edge tab that replaced it is invisible to fitPanels. That is safe only
+  // because the media column can never reach the row's own floor at lg+, so the
+  // tab's 20px is absorbed by slack rather than by the preview. Pin it: raising
+  // MEDIA_WIDTH.max past 684 would silently start eating into the preview and
+  // nothing else would catch it.
+  it('leaves the preview its floor with the inspector collapsed', () => {
+    const LG = 1024
+    expect(fitPanels([media(MEDIA_WIDTH.max)], LG)).toEqual([MEDIA_WIDTH.max])
+    expect(
+      MEDIA_WIDTH.max + INSPECTOR_TAB_W + MIN_PREVIEW_W,
+    ).toBeLessThanOrEqual(LG)
   })
 })
 

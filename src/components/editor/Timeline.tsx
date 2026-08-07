@@ -1612,7 +1612,8 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
             </Button>
           ))}
           {/* Deliberately NOT in the shared `tools` array: at lg+ the inspector
-              column is already on screen, so this button would be a no-op there. */}
+              has its own column, whose visibility is `inspectorCollapsed` and
+              not `panel` — so this button would do nothing there. */}
           <Button
             variant="ghost"
             size="icon"

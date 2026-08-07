@@ -43,6 +43,23 @@ export const MEDIA_WIDTH: PanelWidthSpec = {
  *  of the preview's width, and a 16:9 frame below this stops being workable. */
 export const MIN_PREVIEW_W = 320
 
+/** The collapsed inspector's edge tab, in CSS px — the only way back once the
+ *  column is hidden.
+ *
+ *  A real `shrink-0` flex sibling, never an absolutely-positioned strip: an
+ *  overlay overhanging PreviewStage sits OUTSIDE its dragover/drop subtree, so a
+ *  file dropped there navigates the tab away from the editor. Same hazard the
+ *  resize handle's inward-only `::after` avoids.
+ *
+ *  Deliberately invisible to `fitPanels` — adding a third entry to the budget
+ *  for 20px is not worth it, and it is provably safe at `lg+`: collapsing
+ *  removes at least `INSPECTOR_WIDTH.min`, so the preview is always far wider
+ *  than in the expanded case. `layoutPrefs.test.ts` pins that.
+ *
+ *  A TS constant rather than a `w-5` in the markup, for exactly the reason
+ *  `spec.initial` is one: two copies of a number drift. */
+export const INSPECTOR_TAB_W = 20
+
 export function clampPanelWidth(spec: PanelWidthSpec, px: number): number {
   return Math.min(spec.max, Math.max(spec.min, Math.round(px)))
 }

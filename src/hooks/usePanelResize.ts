@@ -21,6 +21,11 @@
 //     too), and it CONSUMES every key `useEditorKeyboard` listens for — that
 //     hook's window listener only skips INPUT/TEXTAREA, so an unconsumed
 //     Backspace on a focused splitter deletes the selected clip.
+//   - **A panel that leaves the row hands its budget back.** `isLive` stops
+//     counting a `display:none` panel the moment its class flips, but nothing
+//     re-fits on a class change — `unregister` doesn't either — so the
+//     neighbouring column would keep whatever squeezed width it last had. The
+//     `hidden` option exists to close that: pass it and the hook re-fits.
 //
 // The gesture follows the project's pointer rules: exclusive (a second pointer
 // can't hijack a running drag), `pointercancel` restores instead of committing,
@@ -145,12 +150,17 @@ export function usePanelResize(
   {
     edge,
     label,
+    hidden = false,
   }: {
     /** Which edge of the panel the handle sits on. Dragging AWAY from the panel
      *  widens it. */
     edge: 'left' | 'right'
     /** Accessible name for the separator, e.g. "Resize inspector". */
     label: string
+    /** True while the caller has taken this panel out of the row (collapsed).
+     *  The caller still flips its own `display`; this only tells the hook when
+     *  to hand the freed width back to the other panels. */
+    hidden?: boolean
   },
 ): PanelResize {
   const panelRef = useRef<HTMLElement>(null)
@@ -178,6 +188,18 @@ export function usePanelResize(
       entryRef.current = null
     }
   }, [spec])
+
+  // Re-fit when this panel joins or leaves the row. A LAYOUT effect: it runs
+  // after React has committed the caller's class change (so `getClientRects()`
+  // already reads zero) and before paint — in a plain effect the neighbouring
+  // column visibly lurches for one frame on every toggle.
+  //
+  // Deliberately a SECOND effect rather than `collapsed` in the register
+  // effect's deps: re-registering on every toggle would discard the in-memory
+  // `preferred` and re-read localStorage, losing an unsaved re-fit.
+  useIsomorphicLayoutEffect(() => {
+    relayout()
+  }, [hidden])
 
   useEffect(
     () => () => {

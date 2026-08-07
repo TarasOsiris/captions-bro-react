@@ -257,7 +257,8 @@ siblings.
 - Why `lg` and not a tablet tier: desktop chrome starts at 608px of side panels.
   At 1024 the preview still gets 416px; at 768 it gets 160px and is broken. A
   `md` tier could only shed the inspector, which is mostly an empty state when
-  nothing is selected — so shedding it at _every_ width below `lg` is free.
+  nothing is selected — so shedding it at _every_ width below `lg` is free. The
+  desktop collapse (below) is the manual version of the same argument.
 
 ### Both side columns are user-resizable — `usePanelResize`
 
@@ -305,8 +306,30 @@ the two edges cannot drift apart. The rules that keep it cheap and safe:
 - The bins reflow by themselves: `repeat(auto-fill,minmax(4.75rem,1fr))` turns a
   wider column into more tiles per row (2 at the minimum width, 5 at the
   maximum) with no breakpoint and no JS.
-- The inspector column is ALWAYS mounted at `lg+`, empty state included, so
-  selecting a clip never resizes the preview under the user.
+- The inspector column is always MOUNTED at `lg+`, empty state included, so
+  selecting a clip never resizes the preview under the user. It can be hidden
+  only by an EXPLICIT user action — its header `X` sets `uiSlice`'s
+  `inspectorCollapsed` and the column becomes `display:none` — and **nothing
+  reopens it but the user.** "Reopen the inspector when a clip is selected" is
+  the obvious next idea and it is exactly the rule above, broken: it would put a
+  preview resize back on the selection. The width change has to stay a thing the
+  user asked for.
+- **The collapsed column's edge tab is a real `shrink-0` flex sibling**
+  (`INSPECTOR_TAB_W`, 20px), not an absolutely-positioned strip — an overlay
+  over `PreviewStage` sits outside its dragover/drop subtree, which is the
+  drop-target hole the `::after` rule above exists to avoid. For the same reason
+  it is a plain `<button>`, not the `icon` `Button`, whose `after:-inset-2` would
+  overhang it. Its width is a TS constant rather than a `w-*` class, per
+  `spec.initial` above. It is invisible to `fitPanels`, which is safe because
+  collapsing frees at least `INSPECTOR_WIDTH.min`; `layoutPrefs.test.ts` pins
+  the arithmetic so raising `MEDIA_WIDTH.max` can't quietly eat the preview.
+- **Collapsing and expanding hand focus over explicitly.** Both controls hide
+  _themselves_, so without the handoff every toggle drops focus on `<body>` —
+  where `useEditorKeyboard`'s window listener is live and a stray Backspace
+  deletes the selected clip. `usePanelResize`'s `hidden` option owns the other
+  half: a panel leaving the row re-fits the remaining ones in a LAYOUT effect,
+  since `isLive` stops counting it on the class flip but nothing else re-fits
+  (`unregister` doesn't either).
 
 ### Fixed chrome geometry lives in `styles.css`
 
@@ -450,7 +473,10 @@ Five rules carry it:
   into the file, and would dirty the autosave on every wheel tick. It is
   deliberately not persisted either: restoring a scale without its scroll
   offset is disorienting, and the scale was chosen for a different project's
-  duration.
+  duration. **This is the general rule for chrome state**, not a fact about
+  zoom: `inspectorCollapsed` lives in `uiSlice` on the same reasoning (plus one
+  of its own — it drives a `className` on an SSR'd route, so a value restored
+  from localStorage would be a hydration mismatch).
 - **The pivot is captured by the COMMAND, restored before PAINT.** Once
   `pxPerSec` has changed the old scale is gone and the anchor can no longer be
   computed, so `applyZoom` stores it in a ref first; a `useIsomorphicLayoutEffect`
