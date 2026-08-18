@@ -46,135 +46,145 @@ export function TopBar({
   const canRedo = useEditorStore(selectCanRedo)
   return (
     <header className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b border-edge bg-surface pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:gap-3">
-      <div className="flex items-center gap-2.5">
-        <img
-          src="/app-icon-192.png?v=2"
-          alt="Captions Bro"
-          width={28}
-          height={28}
-          decoding="async"
-          className="h-7 w-7 shrink-0 rounded-lg shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
-        />
-        {/* The icon carries the brand on a phone; the wordmark costs ~105px. */}
-        <span className="hidden text-sm font-semibold tracking-tight text-ink sm:inline">
-          Captions Bro
+      {/* Three groups, not one flat row: the history pair is CENTRED by sitting
+          between two `flex-1` (basis-0) siblings, so it lands on the bar's
+          midpoint without measuring anything. Only the left group carries
+          `min-w-0` — the right one keeps its automatic min-width so Export can
+          never be shrunk into the centre group; the project name truncates
+          instead, which is what it already did. */}
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        <div className="flex shrink-0 items-center gap-2.5">
+          <img
+            src="/app-icon-192.png?v=2"
+            alt="Captions Bro"
+            width={28}
+            height={28}
+            decoding="async"
+            className="h-7 w-7 shrink-0 rounded-lg shadow-[0_2px_8px_-2px_rgba(0,0,0,0.5)]"
+          />
+          {/* The icon carries the brand on a phone; the wordmark costs ~105px. */}
+          <span className="hidden text-sm font-semibold tracking-tight text-ink sm:inline">
+            Captions Bro
+          </span>
+        </div>
+
+        <div className="hidden h-4 w-px shrink-0 bg-edge sm:block" />
+
+        <span className="min-w-0 truncate text-xs text-muted">
+          {projectName ?? 'Untitled project'}
         </span>
       </div>
 
-      <div className="hidden h-4 w-px shrink-0 bg-edge sm:block" />
+      <div className="flex shrink-0 items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                useEditorStore.getState().undo()
+              }}
+              disabled={!canUndo}
+              aria-label="Undo"
+              className="h-7 w-7 shrink-0"
+            >
+              <Undo2 className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Undo (⌘Z)</TooltipContent>
+        </Tooltip>
 
-      <span className="min-w-0 flex-1 truncate text-xs text-muted">
-        {projectName ?? 'Untitled project'}
-      </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                useEditorStore.getState().redo()
+              }}
+              disabled={!canRedo}
+              aria-label="Redo"
+              className="h-7 w-7 shrink-0"
+            >
+              <Redo2 className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
+        </Tooltip>
+      </div>
 
-      {/* Never hidden. This used to be `hidden sm:flex`, which made it invisible
-          on exactly the devices where encoding fails — leaving a greyed-out
-          Export button with no explanation. Below sm it collapses to the icon,
-          with the reason still in the accessible name (and in a toast, fired
-          once from useExport's probe). */}
-      {supported === false && (
-        <Badge
-          variant="warning"
-          title={unsupportedReason ?? UNSUPPORTED_FALLBACK}
-          className="flex shrink-0 items-center gap-1.5"
+      <div className="flex flex-1 items-center justify-end gap-2 sm:gap-3">
+        {/* Never hidden. This used to be `hidden sm:flex`, which made it invisible
+            on exactly the devices where encoding fails — leaving a greyed-out
+            Export button with no explanation. Below sm it collapses to the icon,
+            with the reason still in the accessible name (and in a toast, fired
+            once from useExport's probe). */}
+        {supported === false && (
+          <Badge
+            variant="warning"
+            title={unsupportedReason ?? UNSUPPORTED_FALLBACK}
+            className="flex min-w-0 shrink items-center gap-1.5"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            {/* Visible from sm up; below that the icon carries it visually while
+                the text stays in the accessible name. */}
+            <span className="sr-only truncate sm:not-sr-only">
+              {unsupportedReason ?? UNSUPPORTED_FALLBACK}
+            </span>
+          </Badge>
+        )}
+
+        {/* Renders null unless there is an install path to offer, so it costs no
+            width on desktop Chrome-with-it-already-installed or on Firefox. */}
+        <InstallButton />
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggle}
+              aria-label={
+                theme === 'dark'
+                  ? 'Switch to light theme'
+                  : 'Switch to dark theme'
+              }
+              className="h-7 w-7 shrink-0"
+            >
+              {theme === 'dark' ? (
+                <Sun className="h-4 w-4" />
+              ) : (
+                <Moon className="h-4 w-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Marketing, not an editing tool — the first thing to shed on a phone. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          asChild
+          className="hidden shrink-0 lg:inline-flex"
         >
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          {/* Visible from sm up; below that the icon carries it visually while
-              the text stays in the accessible name. */}
-          <span className="sr-only sm:not-sr-only">
-            {unsupportedReason ?? UNSUPPORTED_FALLBACK}
-          </span>
-        </Badge>
-      )}
+          <a href="mailto:info@ninevastudios.com">
+            <Mail className="h-3.5 w-3.5" />
+            Contact
+          </a>
+        </Button>
 
-      {/* Renders null unless there is an install path to offer, so it costs no
-          width on desktop Chrome-with-it-already-installed or on Firefox. */}
-      <InstallButton />
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggle}
-            aria-label={
-              theme === 'dark'
-                ? 'Switch to light theme'
-                : 'Switch to dark theme'
-            }
-            className="h-7 w-7 shrink-0"
-          >
-            {theme === 'dark' ? (
-              <Sun className="h-4 w-4" />
-            ) : (
-              <Moon className="h-4 w-4" />
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {theme === 'dark' ? 'Light theme' : 'Dark theme'}
-        </TooltipContent>
-      </Tooltip>
-
-      {/* Marketing, not an editing tool — the first thing to shed on a phone. */}
-      <Button
-        variant="ghost"
-        size="sm"
-        asChild
-        className="hidden shrink-0 lg:inline-flex"
-      >
-        <a href="mailto:info@ninevastudios.com">
-          <Mail className="h-3.5 w-3.5" />
-          Contact
-        </a>
-      </Button>
-
-      <div className="hidden h-4 w-px shrink-0 bg-edge lg:block" />
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              useEditorStore.getState().undo()
-            }}
-            disabled={!canUndo}
-            aria-label="Undo"
-            className="h-7 w-7 shrink-0"
-          >
-            <Undo2 className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Undo (⌘Z)</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              useEditorStore.getState().redo()
-            }}
-            disabled={!canRedo}
-            aria-label="Redo"
-            className="h-7 w-7 shrink-0"
-          >
-            <Redo2 className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
-      </Tooltip>
-
-      <Button
-        onClick={onExport}
-        disabled={!canExport || supported === false}
-        className="shrink-0"
-      >
-        <Upload className="h-4 w-4" />
-        Export
-      </Button>
+        <Button
+          onClick={onExport}
+          disabled={!canExport || supported === false}
+          className="shrink-0"
+        >
+          <Upload className="h-4 w-4" />
+          Export
+        </Button>
+      </div>
     </header>
   )
 }
