@@ -9,6 +9,8 @@ import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
 import { clipNaturalSize } from '@/lib/render/textSource'
 import { CanvasTextEditor } from '@/components/editor/CanvasTextEditor'
 import { MediaSources } from '@/components/editor/MediaSources'
+import { PreviewFullscreenControls } from '@/components/editor/PreviewFullscreenControls'
+import { togglePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
 import { useElementSize } from '@/hooks/useElementSize'
 import { usePreviewCompositor } from '@/hooks/usePreviewCompositor'
 import { withTextDefaults } from '@/lib/model/text'
@@ -56,11 +58,37 @@ function GuideLine({ axis, frac }: { axis: 'x' | 'y'; frac: number }) {
   )
 }
 
+/**
+ * The stage's layout, in two WHOLE chunks rather than a base plus overrides.
+ *
+ * `twMerge` only resolves conflicts inside the same variant, so appending
+ * `p-0`/`bg-black` to the inline string would leave `sm:p-3`/`lg:p-5` and the
+ * radial-gradient glow in place — "fullscreen" with 20px of padding and a
+ * purple wash. Only `STAGE_BASE` is shared, and it holds the one thing that
+ * must never change: `[container-type:size]`, which both states size the aspect
+ * frame from (`min(100cqh, …cqw)`), extrinsically in each — so the implied
+ * `contain: size` stays inert. See CLAUDE.md.
+ */
+const STAGE_BASE =
+  'flex items-center justify-center overflow-hidden [container-type:size]'
+const STAGE_INLINE =
+  'relative min-h-0 min-w-0 flex-1 bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-2 sm:p-3 lg:p-5'
+// `inset-x-0 top-0 h-dvh`, NOT `inset-0`: the shell is `h-dvh`, and a fixed box
+// pinned by `bottom:0` resolves against the LARGE viewport on iOS — the control
+// bar would sit behind Safari's toolbar. `z-[60]` is a tier above everything
+// else (50 is the mobile rail AND ExportScreen); the export case is excluded at
+// render time by the route, never by z-order.
+const STAGE_FULLSCREEN = 'fixed inset-x-0 top-0 z-[60] h-dvh bg-black'
+
 interface PreviewStageProps {
   poolRef: React.RefObject<MediaPool>
   dropDisabled: boolean
+  /** Cover the viewport in place — promoted, never remounted (see above). */
+  fullscreen: boolean
   onDropFile: (file: File) => void
   onPickFile: () => void
+  onTogglePlay: () => void
+  onSeek: (t: number) => void
 }
 
 /**
@@ -194,8 +222,11 @@ type Gesture =
 export function PreviewStage({
   poolRef,
   dropDisabled,
+  fullscreen,
   onDropFile,
   onPickFile,
+  onTogglePlay,
+  onSeek,
 }: PreviewStageProps) {
   const project = useEditorStore((s) => s.project)
   // The preview frame's shape. Derived rather than a constant: the project's
@@ -261,6 +292,13 @@ export function PreviewStage({
   useEffect(() => {
     if (editingClipId != null && !selectedLive) setEditingClipId(null)
   }, [editingClipId, selectedLive])
+
+  // Fullscreen is a PLAYER, not an editor: the textarea is unmounted below, and
+  // its cleanup ends the edit session — but the state has to go too, or exiting
+  // fullscreen would reopen the caret over a frame the user has moved on from.
+  useEffect(() => {
+    if (fullscreen) setEditingClipId(null)
+  }, [fullscreen])
 
   // The preview render loop — the SAME drawScene the export uses, over the
   // pool. Mounts once and reads the document via getState(), so it neither
@@ -479,7 +517,10 @@ export function PreviewStage({
   }
 
   const onFramePointerDown = (e: React.PointerEvent) => {
-    if (!hasClips) return
+    // No editing gestures in fullscreen. This gate and the section's deselect
+    // below are ONE change: gating only this one skips the stopPropagation
+    // underneath, so every tap would bubble out and clear the selection.
+    if (fullscreen || !hasClips) return
     e.stopPropagation()
     if (!canBeginGesture(e)) return
     const el = frameRef.current
@@ -657,6 +698,7 @@ export function PreviewStage({
   // and while the clip isn't live at the playhead, so they can't sit over a
   // frame it isn't drawn on.
   const showChrome =
+    !fullscreen &&
     selectedClip != null &&
     selectedLive &&
     !playing &&
@@ -669,11 +711,19 @@ export function PreviewStage({
         e.preventDefault()
       }}
       onDragLeave={onDragLeave}
+      // The drop handlers stay live in fullscreen ON PURPOSE. The section then
+      // covers the WHOLE viewport, so a missing `preventDefault` would turn the
+      // entire screen into the drop-target hole CLAUDE.md warns about twice: a
+      // file dropped on a non-target navigates the tab and the session is gone.
       onDrop={onDrop}
-      onPointerDown={() => {
-        selectClip(null)
-      }}
-      className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-stage bg-[radial-gradient(70rem_45rem_at_50%_-15%,rgba(168,137,255,0.05),transparent)] p-2 [container-type:size] sm:p-3 lg:p-5"
+      onPointerDown={
+        fullscreen
+          ? undefined
+          : () => {
+              selectClip(null)
+            }
+      }
+      className={`${STAGE_BASE} ${fullscreen ? STAGE_FULLSCREEN : STAGE_INLINE}`}
     >
       <div
         ref={frameRef}
@@ -807,7 +857,7 @@ export function PreviewStage({
         {/* Inline text editing. Positioned by the SAME rect as the chrome, with
             transparent glyphs over the canvas-drawn text — so the thing being
             edited is the thing that exports. */}
-        {editingClipId && rect && !playing && selectedLive && (
+        {!fullscreen && editingClipId && rect && !playing && selectedLive && (
           <CanvasTextEditor
             clipId={editingClipId}
             rect={rect}
@@ -818,6 +868,14 @@ export function PreviewStage({
           />
         )}
       </div>
+
+      {fullscreen && (
+        <PreviewFullscreenControls
+          onTogglePlay={onTogglePlay}
+          onSeek={onSeek}
+          onExit={togglePreviewFullscreen}
+        />
+      )}
 
       {dragOver && (
         <div className="pointer-events-none absolute inset-4 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent/10">

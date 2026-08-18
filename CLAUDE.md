@@ -346,7 +346,7 @@ phone clears every width breakpoint and still has no vertical room.
 `PreviewStage.tsx`'s frame is `h-[min(100cqh,56.25cqw)] w-[min(100cqw,177.778cqh)]`
 — a two-axis contain fit against the `[container-type:size]` section, with the
 two numbers interpolated from `canvasAspect(project.canvas)` (the `min()` pair on
-each axis is the contract; only the constants change). Four
+each axis is the contract; only the constants change). Five
 invariants:
 
 1. **The middle row in `routes/index.tsx` must stay a row-direction `flex` with
@@ -360,9 +360,33 @@ invariants:
 4. Never regress the frame to a one-axis fit (`h-full` + `max-w-full` silently
    squishes it). Padding on the section is safe: `cq*` units resolve against the
    content box, so padding is already excluded.
+5. **Fullscreen promotes the section IN PLACE — never remounts or reparents
+   it.** `usePreviewCompositor` captures the canvas and its 2D context once
+   (deps `[canvasRef, poolRef]`, both stable refs, so the effect never re-runs)
+   and `MediaSources` must stay mounted in this exact DOM position, so a second
+   preview component, a portal or a conditional subtree all produce a black
+   canvas plus lost audio and a lost WebKit `play()` grant. The same `<section>`
+   simply swaps `STAGE_INLINE` for `STAGE_FULLSCREEN` and the container query
+   starts resolving against the viewport — no new geometry. Two traps inside
+   that: the swap is a WHOLE-CHUNK ternary, because `twMerge` only resolves
+   conflicts within one variant (an appended `p-0` loses to `sm:p-3`/`lg:p-5`,
+   and `bg-black` never clears a `bg-[radial-gradient(…)]`); and the box is
+   `fixed inset-x-0 top-0 h-dvh`, not `inset-0`, because a fixed box pinned by
+   `bottom:0` sizes against iOS's LARGE viewport and would put the control bar
+   behind Safari's toolbar.
 
-Verify by _measuring_ computed `width/height` at 320/375/430/768/1024/1440 — it
-must be 1.7778 at every one. Don't eyeball it.
+`container-type: size` implies `contain: layout` as well, which makes the
+section a containing block for its own `position: fixed` descendants. Nothing
+rendered inside PreviewStage may use `fixed` expecting viewport coordinates —
+that is why `ClipContextMenu`'s virtual anchor lives in the Timeline, and why
+`PreviewFullscreenControls` is `absolute`. `contain: size` stays inert in both
+states because the box is extrinsically sized either way (by `flex-1` in flow,
+by `top/h-dvh` out of it) — which is the same guarantee invariant 1 protects,
+from a different source.
+
+Verify by _measuring_ computed `width/height` at 320/375/430/768/1024/1440 —
+in BOTH states — it must equal `canvasAspect(project.canvas)` at every one.
+Don't eyeball it.
 
 ### The output canvas is a per-project choice
 
@@ -436,6 +460,7 @@ scroller panning.
 | `ClipBox` root           | `selected ? touch-none : [pan-x_pan-y]` | unselected clips stay scroll-transparent so a long timeline is pannable anywhere       |
 | trim bars, preview frame | `touch-none`                            | they own their gesture outright                                                        |
 | slider root              | `touch-none`                            | same — a drag on it is never a scroll                                                  |
+| fullscreen scrub bar     | `touch-none`                            | same; its hit area grows via `after:-inset-y-3`, not by thickening the line            |
 | canvas text editor       | `touch-auto`                            | a tap must place the caret inside the otherwise `touch-none` frame                     |
 | popover content          | `overscroll-contain`                    | the font list's scroll must not chain out to the mobile sheet                          |
 
@@ -590,6 +615,14 @@ iPad + trackpad).
 - **Grid cells that can be `display:none` need explicit placement.** A hidden
   grid item is removed from the grid entirely, so its siblings auto-place into
   _its_ track — which is why the Timeline transport carries `col-start-2`.
+- **The z budget tops out at 60, and 50 is shared.** `ExportScreen`, the mobile
+  rail, popovers and tooltips are all `z-50`; the fullscreen stage is `z-[60]`
+  because it must cover the rail, which is later in the DOM. That means z-order
+  cannot also express "below the export screen" — so the two are made mutually
+  exclusive at RENDER time (`routes/index.tsx` passes
+  `fullscreen={previewFullscreen && exportPhase === 'idle'}`), not by an effect.
+  An effect runs after paint, which is one frame of preview over the screen that
+  owns the finished MP4 on iOS.
 - Tooltips are hover/focus-only (Radix ignores touch by design). Any label that
   carries information available nowhere else must live in the control itself —
   e.g. the "SOON" badge on the inert rail items, the `role="tab"`/`aria-selected`
@@ -635,6 +668,14 @@ iPad + trackpad).
 - **No per-line caption backgrounds** (the Instagram look) — the background box
   wraps the whole block. Per-line boxes need the layout to emit one rect per
   line, which is a feature, not a fix.
+- **iPhone Safari has no `Element.requestFullscreen`**, so the fullscreen
+  preview there is the CSS overlay alone — the video fills the app, the browser
+  chrome stays. That is the whole intended fallback, and `lib/fullscreen.ts`
+  feature-detects rather than branching on `isAppleWebKit` (which exists to pick
+  copy, never capability). **Never** reach for
+  `HTMLVideoElement.webkitEnterFullscreen` on a pool `<video>` to "fix" it: it
+  hands the raw decoded source to the native player — no compositor, no text
+  overlays, no WYSIWYG. It is the tempting wrong answer.
 
 ## PWA — the editor installs and runs offline
 

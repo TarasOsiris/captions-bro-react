@@ -1,5 +1,6 @@
 // Editor keyboard shortcuts, ONE window listener:
 // Space = play/pause · ←/→ = nudge 1s · Home/End = jump · Escape = deselect ·
+// F = fullscreen preview (Escape leaves it) ·
 // Delete/Backspace = remove the selected clip · Cmd/Ctrl+Z (+Shift) = undo/redo ·
 // Cmd/Ctrl +/−/0 = timeline zoom · S or Cmd+B = split · Q/W = trim head/tail to
 // the playhead · Cmd+C/X/V = copy/cut/paste · Cmd+D = duplicate.
@@ -16,6 +17,7 @@ import { useEffect } from 'react'
 import { useEditorStore } from '@/store/editorStore'
 import { projectDuration } from '@/lib/model/selectors'
 import { DEFAULT_PX_PER_SEC, ZOOM_STEP, zoomBy } from '@/lib/timeline/zoom'
+import { togglePreviewFullscreen } from './usePreviewFullscreen'
 import type { ClipCommands } from './useClipCommands'
 
 /** Playhead step (s) for ←/→ and the Timeline's nudge buttons. Exported so the
@@ -45,6 +47,7 @@ export const EDITOR_BARE_KEY_CODES: readonly string[] = [
   'KeyS',
   'KeyQ',
   'KeyW',
+  'KeyF',
 ]
 
 export function useEditorKeyboard({
@@ -80,6 +83,25 @@ export function useEditorKeyboard({
         return
       }
       const st = useEditorStore.getState()
+      // Fullscreen owns Escape, and both exits sit ABOVE the hasClips gate
+      // below — otherwise an empty project would trap the user in a black
+      // screen with no way back. Escape must not also fall through to the
+      // deselect at the bottom, hence the return.
+      if (st.previewFullscreen) {
+        if (
+          e.code === 'Escape' ||
+          (e.code === 'KeyF' && !e.metaKey && !e.ctrlKey && !e.altKey)
+        ) {
+          e.preventDefault()
+          togglePreviewFullscreen()
+          return
+        }
+      }
+      // Fullscreen is a PLAYER: the timeline is covered, so a document edit
+      // would land somewhere the user cannot see it. Transport, zoom and
+      // undo/redo stay live; everything that mutates the document is inert,
+      // the same line the canvas gestures and the selection chrome draw.
+      const editable = !st.previewFullscreen
       // Before the hasClips gate: undo must still work when the last clip was
       // just deleted (the project is empty precisely BECAUSE of the edit).
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
@@ -109,6 +131,7 @@ export function useEditorKeyboard({
           st.setZoom(DEFAULT_PX_PER_SEC)
           return
         }
+        if (!editable) return
         // Clipboard. `preventDefault` only when we actually act, so a real text
         // copy elsewhere on the page still reaches the browser.
         if (e.code === 'KeyC' && st.selectedClipId) {
@@ -138,7 +161,7 @@ export function useEditorKeyboard({
         }
       }
       const hasClips = projectDuration(st.project) > 0
-      if (e.code === 'Delete' || e.code === 'Backspace') {
+      if (editable && (e.code === 'Delete' || e.code === 'Backspace')) {
         // The command owns its own precondition (see `targetClip`); guarding
         // again here is how Delete and Cmd+X drifted apart in the first place.
         e.preventDefault()
@@ -150,20 +173,35 @@ export function useEditorKeyboard({
       // `usePanelResize`'s separator has to consume the keys it does — an
       // unconsumed `S` on a focused splitter would split a clip.
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.code === 'KeyS') {
+        // Enter fullscreen. After the hasClips gate: there is nothing to watch
+        // on an empty project. Leaving it is handled above, where it is
+        // reachable whatever the project holds.
+        if (e.code === 'KeyF') {
           e.preventDefault()
-          commands.split()
+          togglePreviewFullscreen()
           return
         }
-        if (e.code === 'KeyQ') {
-          e.preventDefault()
-          commands.trimToPlayhead('left')
-          return
-        }
-        if (e.code === 'KeyW') {
-          e.preventDefault()
-          commands.trimToPlayhead('right')
-          return
+        // Scoped to the three editing keys, NOT an early return from the
+        // handler: the transport below has to keep working in fullscreen, and
+        // Space especially — the exit button holds focus there, so without the
+        // `preventDefault` that Space reaches, the browser activates it and the
+        // play shortcut closes fullscreen instead.
+        if (editable) {
+          if (e.code === 'KeyS') {
+            e.preventDefault()
+            commands.split()
+            return
+          }
+          if (e.code === 'KeyQ') {
+            e.preventDefault()
+            commands.trimToPlayhead('left')
+            return
+          }
+          if (e.code === 'KeyW') {
+            e.preventDefault()
+            commands.trimToPlayhead('right')
+            return
+          }
         }
       }
       if (e.code === 'Space') {

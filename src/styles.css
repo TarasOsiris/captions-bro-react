@@ -125,6 +125,15 @@
   );
 }
 
+/* The fullscreen preview covers that chrome, so the offset above would park a
+   toast in the middle of the video — and the service-worker update toast is
+   `duration: Infinity`, i.e. one mis-tap from reloading over a live session.
+   The class goes on <html> (written by usePreviewFullscreenSync) because the
+   Toaster is mounted in __root.tsx, outside the editor shell. */
+.preview-fullscreen {
+  --toast-offset-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+
 * {
   box-sizing: border-box;
 }

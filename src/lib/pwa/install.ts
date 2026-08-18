@@ -10,6 +10,7 @@
 //    detection picks the COPY, never the capability (see CLAUDE.md).
 
 import { isAppleWebKit } from '@/lib/platform'
+import { nativeFullscreenElement } from '@/lib/fullscreen'
 
 /** The Chromium-only event. Not in lib.dom, so it is spelled out here. */
 export interface BeforeInstallPromptEvent extends Event {
@@ -25,7 +26,13 @@ export function isStandalone(): boolean {
   const legacy = (navigator as Navigator & { standalone?: boolean }).standalone
   return (
     window.matchMedia('(display-mode: standalone)').matches ||
-    window.matchMedia('(display-mode: fullscreen)').matches ||
+    // `display-mode: fullscreen` ALSO matches while the page is in the
+    // Fullscreen API, which the preview's fullscreen mode enters. Without the
+    // guard the install offer would disappear mid-session and reappear on
+    // exit — an installed app is what this is meant to detect, not a
+    // temporarily maximised one.
+    (nativeFullscreenElement() == null &&
+      window.matchMedia('(display-mode: fullscreen)').matches) ||
     window.matchMedia('(display-mode: minimal-ui)').matches ||
     legacy === true
   )

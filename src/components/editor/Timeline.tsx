@@ -9,7 +9,7 @@ import {
   Scissors,
   SkipBack,
   SkipForward,
-  Maximize2,
+  Maximize,
   MoreHorizontal,
   SlidersHorizontal,
   Trash2,
@@ -66,6 +66,7 @@ import { ClipContextMenu } from './ClipContextMenu'
 import { useClipCommands } from '@/hooks/useClipCommands'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { useIsomorphicLayoutEffect } from '@/hooks/useIsomorphicLayoutEffect'
+import { togglePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
 import { NUDGE_SEC } from '@/hooks/useEditorKeyboard'
 import { DEFAULT_IMAGE_DURATION_SEC, formatTimecode } from '@/lib/media'
 import { isPrimaryPointer, releaseCapture } from '@/lib/pointer'
@@ -204,12 +205,18 @@ const RulerTickSpans = memo(function RulerTickSpans({
 })
 
 /**
- * Zoom out / percent readout / zoom in / fit.
+ * Zoom out / percent readout / zoom in.
  *
  * The percent is VISIBLE rather than a tooltip: tooltips are hover-and-focus
  * only (Radix ignores touch by design), so on a phone it would be the only
  * indication of the current scale and unreachable. Same reason every button
  * carries a real `aria-label` instead of relying on the tooltip text.
+ *
+ * It is also the FIT control. Fit used to have its own trailing icon button,
+ * whose slot now belongs to fullscreen; rather than let ⌘0 become the only way
+ * to reach it — unreachable on a phone, which has no keyboard — the readout
+ * became the button. It is a real, labelled affordance, not a hidden gesture:
+ * clicking the zoom level to fit reads the way it behaves.
  *
  * Memoized, and rendered TWICE (the desktop transport row and the mobile pill —
  * the pill is CSS-hidden, not unmounted). Six Radix tooltip subtrees reconciled
@@ -246,9 +253,19 @@ const ZoomControls = memo(function ZoomControls({
         </TooltipTrigger>
         <TooltipContent>Zoom out (⌘−)</TooltipContent>
       </Tooltip>
-      <span className="w-11 text-center font-mono text-[10px] tabular-nums text-muted/70">
-        {percent}%
-      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Zoom to fit"
+            onClick={onFit}
+            className="w-11 rounded-md py-1 text-center font-mono text-[10px] tabular-nums text-muted/70 transition hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+          >
+            {percent}%
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Fit (⌘0)</TooltipContent>
+      </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -266,21 +283,52 @@ const ZoomControls = memo(function ZoomControls({
         </TooltipTrigger>
         <TooltipContent>Zoom in (⌘+)</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            aria-label="Zoom to fit"
-            onClick={onFit}
-          >
-            <Maximize2 className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Fit (⌘0)</TooltipContent>
-      </Tooltip>
     </>
+  )
+})
+
+/**
+ * Enter the fullscreen preview — the slot the timeline's fit icon used to hold,
+ * which is where the user reached for it.
+ *
+ * A SIBLING of ZoomControls rather than a member of it: fullscreen is not a
+ * zoom control, and keeping it out leaves that memo's props untouched. Rendered
+ * in both of ZoomControls' homes, so it exists on the desktop transport row and
+ * in the mobile pill — the only place a phone can reach it.
+ *
+ * `togglePreviewFullscreen` is imported, not threaded: the native request needs
+ * transient activation, so it must run synchronously in this handler, and the
+ * keyboard's `F` calls the very same function.
+ */
+const FullscreenButton = memo(function FullscreenButton({
+  disabled,
+}: {
+  disabled: boolean
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          aria-label="Fullscreen preview"
+          disabled={disabled}
+          onClick={(e) => {
+            // Take focus explicitly BEFORE toggling. `togglePreviewFullscreen`
+            // remembers `document.activeElement` so it can hand focus back on
+            // exit, and a click does not focus a <button> on every platform
+            // (WebKit notably) — without this the return lands on <body>, where
+            // useEditorKeyboard is live and a stray Backspace deletes a clip.
+            e.currentTarget.focus()
+            togglePreviewFullscreen()
+          }}
+        >
+          <Maximize className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Fullscreen (F)</TooltipContent>
+    </Tooltip>
   )
 })
 
@@ -1281,6 +1329,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
             onZoom={applyZoom}
             onFit={zoomToFit}
           />
+          <FullscreenButton disabled={!hasClips} />
         </div>
       </div>
 
@@ -1591,6 +1640,7 @@ export function Timeline({ onTogglePlay, onSeek }: TimelineProps) {
           onZoom={applyZoom}
           onFit={zoomToFit}
         />
+        <FullscreenButton disabled={!hasClips} />
       </div>
 
       {/* Below lg the transport row has no space for the tools, so they appear

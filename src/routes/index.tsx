@@ -8,6 +8,7 @@ import { useExport } from '@/hooks/useExport'
 import { useMediaImport } from '@/hooks/useMediaImport'
 import { usePersistence } from '@/hooks/usePersistence'
 import { usePlayback } from '@/hooks/usePlayback'
+import { usePreviewFullscreenSync } from '@/hooks/usePreviewFullscreen'
 import { useClipCommands } from '@/hooks/useClipCommands'
 import { useClipInsert } from '@/hooks/useClipInsert'
 import { useFontLoader } from '@/hooks/useFontLoader'
@@ -33,6 +34,7 @@ function Editor() {
   const supported = useEditorStore((s) => s.supported)
   const unsupportedReason = useEditorStore((s) => s.unsupportedReason)
   const exportPhase = useEditorStore((s) => s.exportPhase)
+  const previewFullscreen = useEditorStore((s) => s.previewFullscreen)
 
   const hasClips = projectDuration(project) > 0
   const exporting = exportPhase === 'exporting'
@@ -59,6 +61,10 @@ function Editor() {
   useFontLoader()
   // Offline shell + the "new version ready" prompt (production only).
   useServiceWorker()
+  // Keeps the fullscreen flag, the browser's own fullscreen and the wake lock
+  // in agreement; the toggle itself is a plain function the button and the
+  // keyboard import directly.
+  usePreviewFullscreenSync()
 
   // Release all source URLs at unmount.
   useEffect(
@@ -139,8 +145,15 @@ function Editor() {
         <PreviewStage
           poolRef={poolRef}
           dropDisabled={exporting}
+          // Gated at RENDER time, not by an effect: effects run after paint, so
+          // starting an export would show one frame of the `z-[60]` stage over
+          // ExportScreen's `z-50` — the screen that owns the finished MP4 on
+          // iOS. `usePreviewFullscreenSync` then drops the flag for real.
+          fullscreen={previewFullscreen && exportPhase === 'idle'}
           onDropFile={handleImport}
           onPickFile={pickFile}
+          onTogglePlay={togglePlay}
+          onSeek={seek}
         />
         <InspectorPanel />
       </div>

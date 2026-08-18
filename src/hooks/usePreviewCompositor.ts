@@ -14,6 +14,15 @@ import type { RenderSource } from '@/lib/render/compositor'
 import type { MediaPool } from '@/lib/render/mediaPool'
 import type { Clip } from '@/lib/model/types'
 
+/** Ceiling on the preview's backing store, as a multiple of the project's
+ *  OUTPUT width. Windowed, `clientWidth × DPR` is modest; fullscreen on a 5K
+ *  display it asks for ~5120×2880 — roughly 10× the pixels, every frame, with
+ *  the device-space shadow scaling `layout.ts` does per text layer. Since
+ *  `drawScene` is resolution-independent (all geometry is fractional), detail
+ *  above the export's own resolution is invisible; 2× keeps the crisp-text
+ *  argument below intact with room to spare. */
+const MAX_PREVIEW_SCALE = 2
+
 /** How the PREVIEW gets a clip's pixels: the live pool elements, with the
  *  readiness predicates only it needs (an export's frames are always decoded).
  *  The clip-TYPE branch lives in `sceneDrawItems`, shared with the export. */
@@ -77,9 +86,14 @@ export function usePreviewCompositor(
       // instead of being up/down-scaled from a fixed 1920×1080. Geometry is
       // resolution-independent (mediaRect works off fractions), so the image is
       // identical; only the pixel density differs from the export path.
+      // Capped by MAX_PREVIEW_SCALE, and by ONE shared factor across both axes
+      // so the aspect the geometry resolves against never changes.
       const dpr = window.devicePixelRatio || 1
-      const cw = Math.max(1, Math.round(canvas.clientWidth * dpr))
-      const ch = Math.max(1, Math.round(canvas.clientHeight * dpr))
+      const rawW = Math.max(1, canvas.clientWidth * dpr)
+      const rawH = Math.max(1, canvas.clientHeight * dpr)
+      const k = Math.min(1, (project.canvas.width * MAX_PREVIEW_SCALE) / rawW)
+      const cw = Math.max(1, Math.round(rawW * k))
+      const ch = Math.max(1, Math.round(rawH * k))
       if (canvas.width !== cw) canvas.width = cw
       if (canvas.height !== ch) canvas.height = ch
       drawScene(

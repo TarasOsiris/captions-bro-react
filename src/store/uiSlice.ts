@@ -48,6 +48,20 @@ export interface UiSlice {
   /** A setter, not a toggle: the collapse and expand controls are never both
    *  visible, so neither can honestly observe the other's state. */
   setInspectorCollapsed: (collapsed: boolean) => void
+  /** The preview stage is covering the viewport (CapCut-style fullscreen).
+   *
+   *  SESSION state, for the same three reasons as `inspectorCollapsed` above:
+   *  never in `Project` (undo must not drop the user out of fullscreen, and it
+   *  would dirty the autosave), and deliberately NOT persisted — it drives a
+   *  className on an SSR'd route, so a restored value is a hydration mismatch.
+   *
+   *  This flag is the ONLY authority. The browser's Fullscreen API is a
+   *  best-effort mirror of it that is allowed to be absent (iPhone Safari has
+   *  no `Element.requestFullscreen`) or refused; the layout is CSS either way.
+   *  Set it through `togglePreviewFullscreen`, never directly — the native
+   *  call, the focus handoff and the panel dismissal all live there. */
+  previewFullscreen: boolean
+  setPreviewFullscreen: (on: boolean) => void
   /** Open `panel`, or close it if it is already the active one. */
   togglePanel: (panel: Panel) => void
   /** The asset id of an in-flight bin→timeline HTML5 drag, or null. Mirrored
@@ -83,6 +97,13 @@ export const createUiSlice: ImmerSlice<UiSlice> = (set) => ({
   setInspectorCollapsed: (collapsed) =>
     set((s) => {
       s.inspectorCollapsed = collapsed
+    }),
+
+  previewFullscreen: false,
+
+  setPreviewFullscreen: (on) =>
+    set((s) => {
+      s.previewFullscreen = on
     }),
 
   draggingAssetId: null,
