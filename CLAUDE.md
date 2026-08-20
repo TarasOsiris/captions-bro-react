@@ -841,3 +841,34 @@ phone. Everything that _can_ be imported, is: `lib/seo.ts` takes its SSR
 - GA4 (`G-9L6SRQ5WQV`) is wired in `src/routes/__root.tsx`'s `head().scripts` —
   the async `gtag.js` loader + the inline init snippet, server-rendered into
   `<head>` so the tag is present on load.
+
+### Release identity — baked in, never looked up
+
+The TopBar shows which build is running (`v0.1.0 · 33ae6ab`, with the full sha
+and build time in its `title`). `package.json`'s `version` and the git sha reach
+the app as build-time literals: `vite.config.ts` resolves them and hands them to
+Vite's `define`, and `src/lib/buildInfo.ts` is the ONE reader plus the only place
+they get formatted, so the badge and its tooltip can't drift.
+
+- **A literal substitution, not a runtime lookup.** The route is SSR'd, so a
+  value each side derives for itself is a hydration mismatch waiting to happen;
+  a `define` is byte-identical in the server bundle and the client bundle by
+  construction. (In DEV the client gets them as globals off `@vite/env` instead
+  of inlined — same values either way, which is what keeps SSR and hydration
+  agreeing there too.) It also has to be build-time: the deployed container has
+  no git and no repo, only the bundle it was handed.
+- **CI env vars beat the working tree.** A nixpacks/Coolify build usually has no
+  `.git` at all but does export `SOURCE_COMMIT`, so that (and the GitHub /
+  Vercel / CF equivalents) is consulted first, `git rev-parse` second, and
+  `unknown` last. `git status --porcelain` is only asked when the sha came from
+  a tree we can actually inspect — otherwise "clean" would be an assumption
+  dressed up as a fact. A dirty tree renders as a trailing `+`.
+- **`buildInfo.ts`'s `typeof` guards exist for VITEST, which has its own config
+  with no `define`** — not as a "just in case" for the app. Every formatter
+  takes a `BuildInfo` so it unit-tests without them.
+- The build time is formatted by hand in UTC, never `toLocaleString` — a
+  zone/locale-dependent string renders one way in Node and another in the
+  browser, which is the same hydration hazard again.
+- The badge is never hidden: checking the build matters most on a real device.
+  Below `sm` it sheds the version number and keeps the sha (text density, which
+  is all `sm:` is for) — the half that identifies the build uniquely.

@@ -1,6 +1,7 @@
 {
   "name": "captions-bro",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
   "description": "In-browser video editor with AI captions and client-side H.264 MP4 export \u2014 the web version of the Captions Bro iOS app.",
   "scripts": {

@@ -15,6 +15,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { InstallButton } from '@/components/editor/InstallButton'
+import { commitLabel, releaseDetail, releaseLabel } from '@/lib/buildInfo'
 import { useTheme } from '@/hooks/useTheme'
 import { useEditorStore } from '@/store/editorStore'
 import { selectCanRedo, selectCanUndo } from '@/store/historySlice'
@@ -66,6 +67,30 @@ export function TopBar({
           <span className="hidden text-sm font-semibold tracking-tight text-ink sm:inline">
             Captions Bro
           </span>
+
+          {/* The release identity, and the only place it is visible: which
+              build is actually running. It belongs to the APP, so it sits in
+              the brand group rather than next to the project name — and it is
+              a Badge rather than plain text so it doesn't read as a second,
+              competing project label on a phone, where the divider is gone.
+
+              Never hidden: checking the build matters most on a real device,
+              which is exactly where a `hidden sm:` would remove it. Below `sm`
+              it sheds the version number instead and keeps the sha — the half
+              that identifies the build uniquely. That is a text-density fork,
+              which is all `sm:` is ever for here.
+
+              `title`, not a Tooltip: a Tooltip needs a focusable trigger, and
+              making static chrome a tab stop costs more than it gives. The
+              full sha is detail on top of a label that already stands alone. */}
+          <Badge
+            size="sm"
+            title={releaseDetail()}
+            className="shrink-0 font-mono tabular-nums"
+          >
+            <span className="hidden sm:inline">{releaseLabel()}</span>
+            <span className="sm:hidden">{commitLabel()}</span>
+          </Badge>
         </div>
 
         <div className="hidden h-4 w-px shrink-0 bg-edge sm:block" />
