@@ -140,6 +140,19 @@ All video processing is **client-side**. `src/lib/export.ts` is the single seam:
   destroying the editor session it exists to protect. `ExportScreen`'s explicit
   Share (first, where `canShare({files})` is true) / Download buttons are the
   save path there.
+- **The export screen shows the render happening**, because every path reports
+  its compositing canvas through one optional `onSurface` callback
+  (`exportProject` → the three paths, each right after `makeOutputSurface`).
+  `useExport` parks it in a ref — a live DOM object has no place in a store that
+  must stay serializable — and `ExportPreview` MIRRORS it. The mirror **pulls**
+  on a rAF at ~12fps rather than the encoder **pushing** a frame per composite:
+  the encode is what's under time pressure, and a push would tie preview cost to
+  whatever rate mediabunny happens to drain samples at. It never clears before
+  drawing, so the stretch before the first composite (a dynamic import plus a
+  font load) leaves the gradient underneath showing through instead of flashing
+  black — `drawScene` fills the whole frame, so every real frame is opaque and
+  covers the last one. The surface ref is dropped at `done`; a 1080p canvas is
+  not worth pinning behind the result `<video>`.
 
 ### Preview must always match export — one compositor
 

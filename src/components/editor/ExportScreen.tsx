@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Download, Share2, X } from 'lucide-react'
 import { useEditorStore } from '@/store/editorStore'
+import { ExportPreview } from '@/components/editor/ExportPreview'
 import { canvasAspect } from '@/lib/model/canvas'
 
 interface ExportScreenProps {
@@ -16,6 +17,9 @@ interface ExportScreenProps {
   /** The finished MP4. Held by useExport rather than re-fetched from the object
    *  URL, which would put a second full copy of the file in RAM. */
   getResultBlob: () => Blob | null
+  /** The canvas the running export is compositing onto, for the live preview.
+   *  Null until the encoder has allocated it. */
+  getExportSurface: () => HTMLCanvasElement | null
 }
 
 const PREVIEW_RADIUS = 20
@@ -46,6 +50,7 @@ export function ExportScreen({
   onCancel,
   onClose,
   getResultBlob,
+  getExportSurface,
 }: ExportScreenProps) {
   const progress = useEditorStore((s) => s.exportProgress)
   const downloadUrl = useEditorStore((s) => s.downloadUrl)
@@ -181,13 +186,23 @@ export function ExportScreen({
                   className="h-full w-full object-cover"
                 />
               ) : (
-                <div
-                  className="h-full w-full"
-                  style={{
-                    background:
-                      'radial-gradient(60rem 40rem at 50% -10%, color-mix(in srgb, var(--color-accent-deep) 20%, transparent), transparent)',
-                  }}
-                />
+                <>
+                  {/* Stays underneath: it is what the user looks at until the
+                      first frame is composited, which is a dynamic import and a
+                      font load away. */}
+                  <div
+                    className="h-full w-full"
+                    style={{
+                      background:
+                        'radial-gradient(60rem 40rem at 50% -10%, color-mix(in srgb, var(--color-accent-deep) 20%, transparent), transparent)',
+                    }}
+                  />
+                  <ExportPreview
+                    getSurface={getExportSurface}
+                    width={previewW}
+                    height={previewH}
+                  />
+                </>
               )}
             </div>
 

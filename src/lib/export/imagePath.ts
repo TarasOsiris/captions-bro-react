@@ -52,6 +52,9 @@ export function exportImage(
     /** The still's visual layer; a `Clip` satisfies it structurally. */
     media?: MediaLayer
     onProgress?: (fraction: number) => void
+    /** Hands out the compositing surface, for the live preview (see videoPath).
+     *  A still paints once, so the preview is a static frame — correctly so. */
+    onSurface?: (el: HTMLCanvasElement) => void
   },
 ): ExportHandle {
   const token = new CancelToken()
@@ -64,6 +67,7 @@ export function exportImage(
     if (!(await mb.canEncodeVideo('avc'))) throw new ExportUnsupportedError()
 
     const surface = makeOutputSurface(opts.canvas)
+    opts.onSurface?.(surface.el)
     await paintStill(file, opts.media ?? { transform: IDENTITY }, surface)
 
     const output = new mb.Output({

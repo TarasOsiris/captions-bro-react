@@ -53,7 +53,14 @@ export type { ExportHandle, ExportResult } from './types'
  */
 export function exportProject(
   project: Project,
-  opts?: { onProgress?: (fraction: number) => void },
+  opts?: {
+    onProgress?: (fraction: number) => void
+    /** Receives the canvas frames are composited onto, once the chosen path has
+     *  allocated it (after mediabunny's dynamic import, so never synchronously).
+     *  Every path reports it, so the export screen's live preview works
+     *  whichever one `planExport` picks. */
+    onSurface?: (el: HTMLCanvasElement) => void
+  },
 ): ExportHandle {
   const plan = planExport(project)
   // ONE naming policy, resolved here rather than per path — the fast paths used
@@ -68,6 +75,7 @@ export function exportProject(
       fileName,
       media: plan.clip,
       onProgress: opts?.onProgress,
+      onSurface: opts?.onSurface,
     })
   }
 
@@ -78,6 +86,7 @@ export function exportProject(
       media: plan.clip,
       audio: plan.clip,
       onProgress: opts?.onProgress,
+      onSurface: opts?.onSurface,
       overlays: plan.overlays,
       // Safe because the plan requires start === 0 && trimIn === 0, so project
       // time is exactly the sample timestamp.
@@ -86,5 +95,9 @@ export function exportProject(
     })
   }
 
-  return exportTimeline(project, { fileName, onProgress: opts?.onProgress })
+  return exportTimeline(project, {
+    fileName,
+    onProgress: opts?.onProgress,
+    onSurface: opts?.onSurface,
+  })
 }

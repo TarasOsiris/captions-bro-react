@@ -45,7 +45,13 @@ function Editor() {
   const { togglePlay, seek } = usePlayback(poolRef)
   const { importFile } = useMediaImport()
   const { insertAssetAtTime } = useClipInsert()
-  const { startExport, cancelExport, closeExport, getResultBlob } = useExport()
+  const {
+    startExport,
+    cancelExport,
+    closeExport,
+    getResultBlob,
+    getExportSurface,
+  } = useExport()
   // ONE ClipCommands instance for the whole editor; the Timeline holds its own
   // (the callbacks are stable and stateless, so a second instance is free).
   const clipCommands = useClipCommands()
@@ -180,6 +186,7 @@ function Editor() {
           onCancel={cancelExport}
           onClose={closeExport}
           getResultBlob={getResultBlob}
+          getExportSurface={getExportSurface}
         />
       )}
     </div>

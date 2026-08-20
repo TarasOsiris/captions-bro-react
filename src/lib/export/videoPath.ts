@@ -53,6 +53,9 @@ export function exportVideo(
     /** Whether the project INTENDS audio (`intendsAudio`), for the `silent`
      *  verdict — not merely whether the source has an audio track. */
     hasAudio?: boolean
+    /** Hands out the compositing surface once it exists, for the live preview.
+     *  See the note at its call site. */
+    onSurface?: (el: HTMLCanvasElement) => void
   },
 ): ExportHandle {
   const token = new CancelToken()
@@ -84,6 +87,11 @@ export function exportVideo(
       // sized to the project canvas so the output matches the preview exactly.
       const surface = makeOutputSurface(opts.canvas)
       const out = surface.out
+      // The finished frame lives on this canvas until the next one overwrites
+      // it, so the export screen can mirror it and show the render happening.
+      // Handed over rather than pushed per frame: the encode is what's under
+      // time pressure, so the reader pulls at its own rate (ExportPreview).
+      opts.onSurface?.(surface.el)
 
       conversion = await mb.Conversion.init({
         input,

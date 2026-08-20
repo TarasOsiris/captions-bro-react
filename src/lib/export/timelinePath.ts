@@ -30,6 +30,8 @@ export function exportTimeline(
   opts: {
     fileName: string
     onProgress?: (fraction: number) => void
+    /** Hands out the compositing surface, for the live preview (see videoPath). */
+    onSurface?: (el: HTMLCanvasElement) => void
   },
 ): ExportHandle {
   const token = new CancelToken()
@@ -45,6 +47,7 @@ export function exportTimeline(
 
     const surface = makeOutputSurface(project.canvas)
     const out = surface.out
+    opts.onSurface?.(surface.el)
 
     // One decoder per video clip; one decoded bitmap per referenced image asset.
     // Everything acquired here is registered with the bag and released in the

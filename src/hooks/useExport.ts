@@ -37,6 +37,14 @@ export function useExport() {
   // re-fetching the object URL, which would hold a SECOND full copy of the MP4
   // in RAM at the exact moment a phone is closest to being killed.
   const resultBlobRef = useRef<Blob | null>(null)
+  // The canvas the running export composites each frame onto — ExportScreen
+  // mirrors it so the user watches the render instead of a black rectangle.
+  // A ref, like the blob above: it is a live DOM object, so it has no business
+  // in a store that is meant to stay serializable.
+  const surfaceRef = useRef<HTMLCanvasElement | null>(null)
+  /** Identifies the current run, so a surface arriving late can be told apart
+   *  from the one belonging to the export now on screen. */
+  const runIdRef = useRef(0)
   const wakeLockRef = useRef<WakeLockSentinel | null>(null)
 
   // Client-only capability probe (touches WebCodecs, never during SSR).
@@ -87,7 +95,18 @@ export function useExport() {
     const onProgress = (fraction: number) =>
       useEditorStore.getState().setExportProgress(fraction)
 
-    const handle = exportProject(st.project, { onProgress })
+    // Bumping the id here is what makes the guard below sufficient: an export
+    // that was cancelled during its dynamic import still resolves a surface,
+    // and it must not land in the screen showing the NEXT export.
+    const runId = ++runIdRef.current
+    surfaceRef.current = null
+
+    const handle = exportProject(st.project, {
+      onProgress,
+      onSurface: (el) => {
+        if (runIdRef.current === runId) surfaceRef.current = el
+      },
+    })
     handleRef.current = handle
     st.beginExport()
 
@@ -109,6 +128,10 @@ export function useExport() {
       (result) => {
         releaseWakeLock()
         if (handleRef.current !== handle) return
+        // Done: the screen swaps the mirror for the result <video>, so let the
+        // full-size compositing canvas go rather than pin it for the life of
+        // the finished-export screen.
+        surfaceRef.current = null
         const url = URL.createObjectURL(result.blob)
         downloadUrlRef.current = url
         resultBlobRef.current = result.blob
@@ -130,6 +153,7 @@ export function useExport() {
       (err: unknown) => {
         releaseWakeLock()
         if (handleRef.current !== handle) return
+        surfaceRef.current = null
         const message = errorMessage(err)
         if (message != null) toast.error(message)
         useEditorStore.getState().resetExport()
@@ -143,6 +167,7 @@ export function useExport() {
     // Detach first, so a same-tick resolve is dropped by the `!== handle` guard
     // and can't flip the just-cancelled export back to 'done'.
     handleRef.current = null
+    surfaceRef.current = null
     releaseWakeLock()
     handle.cancel().catch(() => {})
     useEditorStore.getState().resetExport()
@@ -155,11 +180,24 @@ export function useExport() {
       downloadUrlRef.current = null
     }
     resultBlobRef.current = null
+    surfaceRef.current = null
     useEditorStore.getState().resetExport()
   }, [])
 
   /** The finished MP4, for Share — avoids re-materialising it from the URL. */
   const getResultBlob = useCallback(() => resultBlobRef.current, [])
 
-  return { startExport, cancelExport, closeExport, getResultBlob }
+  /** The frame the export is composing right now, for the live preview. Polled
+   *  rather than subscribed: it appears mid-export (after mediabunny's dynamic
+   *  import) and its CONTENT changes per encoded frame, neither of which is a
+   *  React render. */
+  const getExportSurface = useCallback(() => surfaceRef.current, [])
+
+  return {
+    startExport,
+    cancelExport,
+    closeExport,
+    getResultBlob,
+    getExportSurface,
+  }
 }
